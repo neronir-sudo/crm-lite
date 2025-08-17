@@ -49,7 +49,6 @@ const LeadSchema = z.object({
   client_uid: z.string().optional()
 });
 
-// This is the new, improved readBody function with error logging
 async function readBody(req: Request): Promise<Record<string, string>> {
   const ct = req.headers.get('content-type') || ''
   try {
@@ -68,7 +67,6 @@ async function readBody(req: Request): Promise<Record<string, string>> {
       return obj
     }
   } catch (error) {
-    // If there's an error reading the body, we now log it!
     console.error("!!! ERROR reading request body:", error);
   }
   return {}
@@ -81,11 +79,9 @@ export async function OPTIONS(request: Request) {
 
 export async function POST(req: Request) {
   const origin = req.headers.get('origin') ?? '';
-
+  
   try {
     const raw = await readBody(req);
-
-    // Our "microphones" for debugging
     console.log("RAW DATA RECEIVED:", JSON.stringify(raw, null, 2));
 
     const cleaned = {
@@ -119,10 +115,11 @@ export async function POST(req: Request) {
       client_uid: raw.client_uid || undefined,
       account_id: raw.account_id || undefined
     };
-
     console.log("CLEANED DATA:", JSON.stringify(cleaned, null, 2));
 
     const parsed = LeadSchema.safeParse(cleaned);
+    
+    console.log("ZOD PARSE RESULT:", JSON.stringify(parsed, null, 2));
 
     if (!parsed.success) {
       return NextResponse.json(
@@ -132,6 +129,8 @@ export async function POST(req: Request) {
     }
 
     const { data, error } = await supabaseAdmin.from('leads').insert([parsed.data]).select('id').single();
+    
+    console.log("SUPABASE RESPONSE:", JSON.stringify({ data, error }, null, 2));
 
     if (error) {
       const { message, details, hint, code } = error;
@@ -140,7 +139,7 @@ export async function POST(req: Request) {
         { status: 400, headers: corsHeaders(origin) }
       );
     }
-
+    
     return NextResponse.json(
       { ok: true, id: data.id },
       { headers: corsHeaders(origin) }
