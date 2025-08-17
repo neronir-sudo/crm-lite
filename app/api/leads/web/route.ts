@@ -2,7 +2,25 @@ import { NextResponse } from 'next/server'
 import { z } from 'zod'
 import { supabaseAdmin } from '../../../../lib/db'
 
-// סכמת הולידציה נשארת זהה
+// --- CORS HEADERS CONFIGURATION ---
+// This is the list of websites allowed to send data to our API.
+// We've added your client's live site. You can add more domains in the future.
+const allowedOrigins = ['https://drshirihendel.co.il'];
+
+const corsHeaders = (origin: string) => {
+  const headers = new Headers();
+  headers.set('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  headers.set('Access-Control-Allow-Headers', 'Content-Type');
+
+  // If the incoming request is from an allowed website, add it to the response header.
+  if (allowedOrigins.includes(origin)) {
+    headers.set('Access-Control-Allow-Origin', origin);
+  }
+  return headers;
+};
+// --- END OF CORS CONFIGURATION ---
+
+
 const LeadSchema = z.object({
   account_id: z.string().uuid().optional(),
   full_name: z.string().min(1).optional(),
@@ -33,14 +51,12 @@ const LeadSchema = z.object({
   placement: z.string().optional(),
   device: z.string().optional(),
   client_uid: z.string().optional()
-})
+});
 
-// תיקנו את הפונקציה הזו כדי שלא תחזיר 'any'
 async function readBody(req: Request): Promise<Record<string, string>> {
   const ct = req.headers.get('content-type') || ''
   try {
     if (ct.includes('application/json')) {
-      // אנו מגדירים שה-JSON הוא רשומה של ערכים מכל סוג, ואז נמיר אותם
       const json = await req.json() as Record<string, unknown>;
       const stringifiedJson: Record<string, string> = {};
       for (const key in json) {
@@ -58,11 +74,19 @@ async function readBody(req: Request): Promise<Record<string, string>> {
   return {}
 }
 
-export async function POST(req: Request) {
-  try {
-    const raw = await readBody(req)
+// This OPTIONS function is new. It handles the "pre-flight" request
+// that browsers send to check security before sending the actual data.
+export async function OPTIONS(request: Request) {
+    const origin = request.headers.get('origin') ?? '';
+    return new Response(null, { headers: corsHeaders(origin) });
+}
 
-    // הסרנו את ההגדרה המפורשת של 'any' ונתנו למערכת להבין לבד
+export async function POST(req: Request) {
+  const origin = req.headers.get('origin') ?? '';
+  
+  try {
+    const raw = await readBody(req);
+    
     const cleaned = {
       full_name: raw.full_name || raw.name || undefined,
       phone: raw.phone ? String(raw.phone).trim() : undefined,
@@ -83,7 +107,7 @@ export async function POST(req: Request) {
       ttclid: raw.ttclid || undefined,
       wbraid: raw.wbraid || undefined,
       gbraid: raw.gbraid || undefined,
-  platform: raw.platform || undefined,
+      platform: raw.platform || undefined,
       campaign_id: raw.campaign_id || undefined,
       adgroup_id: raw.adgroup_id || undefined,
       ad_id: raw.ad_id || undefined,
@@ -93,34 +117,37 @@ export async function POST(req: Request) {
       device: raw.device || undefined,
       client_uid: raw.client_uid || undefined,
       account_id: raw.account_id || undefined
-    }
+    };
 
-    const parsed = LeadSchema.safeParse(cleaned)
+    const parsed = LeadSchema.safeParse(cleaned);
+
     if (!parsed.success) {
       return NextResponse.json(
         { ok: false, where: 'validation', issues: parsed.error.issues, cleaned },
-        { status: 400 }
-      )
+        { status: 400, headers: corsHeaders(origin) } // Added headers
+      );
     }
 
-    const { data, error } = await supabaseAdmin
-      .from('leads')
-      .insert([ parsed.data ])
-      .select('id')
-      .single()
+    const { data, error } = await supabaseAdmin.from('leads').insert([parsed.data]).select('id').single();
 
     if (error) {
-      // הגדרנו סוגים ספציפיים לשגיאת סופהבייס
       const { message, details, hint, code } = error;
       return NextResponse.json(
         { ok: false, where: 'supabase', message, details, hint, code },
-        { status: 400 }
-      )
+        { status: 400, headers: corsHeaders(origin) } // Added headers
+      );
     }
-    return NextResponse.json({ ok: true, id: data.id })
+    
+    return NextResponse.json(
+      { ok: true, id: data.id },
+      { headers: corsHeaders(origin) } // Added headers
+    );
+
   } catch (e) {
-    // טיפול חכם יותר בשגיאות, ללא 'any'
-    const errorMsg = e instanceof Error ? e.message : String(e)
-    return NextResponse.json({ ok: false, where: 'catch', error: errorMsg }, { status: 400 })
+    const errorMsg = e instanceof Error ? e.message : String(e);
+    return NextResponse.json(
+      { ok: false, where: 'catch', error: errorMsg },
+      { status: 400, headers: corsHeaders(origin) } // Added headers
+    );
   }
 }
