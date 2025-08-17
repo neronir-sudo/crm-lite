@@ -1,8 +1,8 @@
-
 import { NextResponse } from 'next/server'
 import { z } from 'zod'
 import { supabaseAdmin } from '../../../../lib/db'
 
+// סכמת הולידציה נשארת זהה
 const LeadSchema = z.object({
   account_id: z.string().uuid().optional(),
   full_name: z.string().min(1).optional(),
@@ -35,13 +35,22 @@ const LeadSchema = z.object({
   client_uid: z.string().optional()
 })
 
-async function readBody(req: Request): Promise<Record<string, any>> {
+// תיקנו את הפונקציה הזו כדי שלא תחזיר 'any'
+async function readBody(req: Request): Promise<Record<string, string>> {
   const ct = req.headers.get('content-type') || ''
   try {
-    if (ct.includes('application/json')) return await req.json()
+    if (ct.includes('application/json')) {
+      // אנו מגדירים שה-JSON הוא רשומה של ערכים מכל סוג, ואז נמיר אותם
+      const json = await req.json() as Record<string, unknown>;
+      const stringifiedJson: Record<string, string> = {};
+      for (const key in json) {
+        stringifiedJson[key] = String(json[key]);
+      }
+      return stringifiedJson;
+    }
     if (ct.includes('application/x-www-form-urlencoded') || ct.includes('multipart/form-data')) {
       const form = await req.formData()
-      const obj: Record<string, any> = {}
+      const obj: Record<string, string> = {}
       for (const [k, v] of form.entries()) obj[k] = String(v)
       return obj
     }
@@ -52,7 +61,9 @@ async function readBody(req: Request): Promise<Record<string, any>> {
 export async function POST(req: Request) {
   try {
     const raw = await readBody(req)
-    const cleaned: Record<string, any> = {
+
+    // הסרנו את ההגדרה המפורשת של 'any' ונתנו למערכת להבין לבד
+    const cleaned = {
       full_name: raw.full_name || raw.name || undefined,
       phone: raw.phone ? String(raw.phone).trim() : undefined,
       email: raw.email || undefined,
@@ -72,7 +83,7 @@ export async function POST(req: Request) {
       ttclid: raw.ttclid || undefined,
       wbraid: raw.wbraid || undefined,
       gbraid: raw.gbraid || undefined,
-      platform: raw.platform || undefined,
+  platform: raw.platform || undefined,
       campaign_id: raw.campaign_id || undefined,
       adgroup_id: raw.adgroup_id || undefined,
       ad_id: raw.ad_id || undefined,
@@ -94,18 +105,22 @@ export async function POST(req: Request) {
 
     const { data, error } = await supabaseAdmin
       .from('leads')
-      .insert([ parsed.data ])    // מכניס רק מה שבטבלה קיימות לו עמודות
+      .insert([ parsed.data ])
       .select('id')
       .single()
 
     if (error) {
+      // הגדרנו סוגים ספציפיים לשגיאת סופהבייס
+      const { message, details, hint, code } = error;
       return NextResponse.json(
-        { ok: false, where: 'supabase', message: error.message, details: (error as any).details, hint: (error as any).hint, code: (error as any).code },
+        { ok: false, where: 'supabase', message, details, hint, code },
         { status: 400 }
       )
     }
     return NextResponse.json({ ok: true, id: data.id })
-  } catch (e: any) {
-    return NextResponse.json({ ok: false, where: 'catch', error: e?.message || String(e) }, { status: 400 })
+  } catch (e) {
+    // טיפול חכם יותר בשגיאות, ללא 'any'
+    const errorMsg = e instanceof Error ? e.message : String(e)
+    return NextResponse.json({ ok: false, where: 'catch', error: errorMsg }, { status: 400 })
   }
 }
