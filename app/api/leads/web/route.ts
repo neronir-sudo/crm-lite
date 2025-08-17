@@ -3,23 +3,19 @@ import { z } from 'zod'
 import { supabaseAdmin } from '../../../../lib/db'
 
 // --- CORS HEADERS CONFIGURATION ---
-// This is the list of websites allowed to send data to our API.
-// We've added your client's live site. You can add more domains in the future.
-const allowedOrigins = ['https://drshirihendel.co.il'];
+const allowedOrigins = ['https://dr-shirihendel.co.il'];
 
 const corsHeaders = (origin: string) => {
   const headers = new Headers();
   headers.set('Access-Control-Allow-Methods', 'POST, OPTIONS');
   headers.set('Access-Control-Allow-Headers', 'Content-Type');
 
-  // If the incoming request is from an allowed website, add it to the response header.
   if (allowedOrigins.includes(origin)) {
     headers.set('Access-Control-Allow-Origin', origin);
   }
   return headers;
 };
 // --- END OF CORS CONFIGURATION ---
-
 
 const LeadSchema = z.object({
   account_id: z.string().uuid().optional(),
@@ -74,8 +70,6 @@ async function readBody(req: Request): Promise<Record<string, string>> {
   return {}
 }
 
-// This OPTIONS function is new. It handles the "pre-flight" request
-// that browsers send to check security before sending the actual data.
 export async function OPTIONS(request: Request) {
     const origin = request.headers.get('origin') ?? '';
     return new Response(null, { headers: corsHeaders(origin) });
@@ -86,15 +80,17 @@ export async function POST(req: Request) {
   
   try {
     const raw = await readBody(req);
+   console.log("RAW DATA RECEIVED:", JSON.stringify(raw, null, 2));
+   console.log("CLEANED DATA:", JSON.stringify(cleaned, null, 2));
     
     const cleaned = {
-      full_name: raw.full_name || raw.name || undefined,
-      phone: raw.phone || raw.contact_phone ? String(raw.phone || raw.contact_phone).trim() : undefined,
-      email: raw.email || undefined,
+      full_name: raw['form_fields[name]'] || raw.full_name || raw.name || undefined,
+      phone: raw['form_fields[tel]'] || raw.phone || raw.contact_phone ? String(raw['form_fields[tel]'] || raw.phone || raw.contact_phone).trim() : undefined,
+      email: raw['form_fields[email]'] || raw.email || undefined,
+      notes: raw['form_fields[message]'] || raw.notes || undefined,
       age: raw.age ?? undefined,
       city: raw.city || undefined,
       region: raw.region || undefined,
-      notes: raw.notes || undefined,
       form_name: raw.form_name || raw.form || undefined,
       landing_page: raw.landing_page || raw.lp || undefined,
       utm_source: raw.utm_source || undefined,
@@ -124,7 +120,7 @@ export async function POST(req: Request) {
     if (!parsed.success) {
       return NextResponse.json(
         { ok: false, where: 'validation', issues: parsed.error.issues, cleaned },
-        { status: 400, headers: corsHeaders(origin) } // Added headers
+        { status: 400, headers: corsHeaders(origin) }
       );
     }
 
@@ -134,20 +130,20 @@ export async function POST(req: Request) {
       const { message, details, hint, code } = error;
       return NextResponse.json(
         { ok: false, where: 'supabase', message, details, hint, code },
-        { status: 400, headers: corsHeaders(origin) } // Added headers
+        { status: 400, headers: corsHeaders(origin) }
       );
     }
     
     return NextResponse.json(
       { ok: true, id: data.id },
-      { headers: corsHeaders(origin) } // Added headers
+      { headers: corsHeaders(origin) }
     );
 
   } catch (e) {
     const errorMsg = e instanceof Error ? e.message : String(e);
     return NextResponse.json(
       { ok: false, where: 'catch', error: errorMsg },
-      { status: 400, headers: corsHeaders(origin) } // Added headers
+      { status: 400, headers: corsHeaders(origin) }
     );
   }
 }
