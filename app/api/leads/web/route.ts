@@ -49,6 +49,7 @@ const LeadSchema = z.object({
   client_uid: z.string().optional()
 });
 
+// This is the new, improved readBody function with error logging
 async function readBody(req: Request): Promise<Record<string, string>> {
   const ct = req.headers.get('content-type') || ''
   try {
@@ -66,7 +67,10 @@ async function readBody(req: Request): Promise<Record<string, string>> {
       for (const [k, v] of form.entries()) obj[k] = String(v)
       return obj
     }
-  } catch {}
+  } catch (error) {
+    // If there's an error reading the body, we now log it!
+    console.error("!!! ERROR reading request body:", error);
+  }
   return {}
 }
 
@@ -77,12 +81,13 @@ export async function OPTIONS(request: Request) {
 
 export async function POST(req: Request) {
   const origin = req.headers.get('origin') ?? '';
-  
+
   try {
     const raw = await readBody(req);
-   console.log("RAW DATA RECEIVED:", JSON.stringify(raw, null, 2));
-   console.log("CLEANED DATA:", JSON.stringify(cleaned, null, 2));
-    
+
+    // Our "microphones" for debugging
+    console.log("RAW DATA RECEIVED:", JSON.stringify(raw, null, 2));
+
     const cleaned = {
       full_name: raw['form_fields[name]'] || raw.full_name || raw.name || undefined,
       phone: raw['form_fields[tel]'] || raw.phone || raw.contact_phone ? String(raw['form_fields[tel]'] || raw.phone || raw.contact_phone).trim() : undefined,
@@ -115,6 +120,8 @@ export async function POST(req: Request) {
       account_id: raw.account_id || undefined
     };
 
+    console.log("CLEANED DATA:", JSON.stringify(cleaned, null, 2));
+
     const parsed = LeadSchema.safeParse(cleaned);
 
     if (!parsed.success) {
@@ -133,7 +140,7 @@ export async function POST(req: Request) {
         { status: 400, headers: corsHeaders(origin) }
       );
     }
-    
+
     return NextResponse.json(
       { ok: true, id: data.id },
       { headers: corsHeaders(origin) }
