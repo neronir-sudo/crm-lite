@@ -89,7 +89,7 @@ export async function POST(req: Request) {
     
     const cleaned = {
       full_name: raw.full_name || raw.name || undefined,
-      phone: raw.phone ? String(raw.phone).trim() : undefined,
+      phone: raw.phone || raw.contact_phone ? String(raw.phone || raw.contact_phone).trim() : undefined,
       email: raw.email || undefined,
       age: raw.age ?? undefined,
       city: raw.city || undefined,
