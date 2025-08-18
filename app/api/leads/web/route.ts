@@ -2,61 +2,57 @@ import { NextResponse } from 'next/server'
 import { z } from 'zod'
 import { supabaseAdmin } from '../../../../lib/db'
 
+// --- CORS & Schema remain the same ---
 const allowedOrigins = ['https://dr-shirihendel.co.il'];
-
 const corsHeaders = (origin: string) => {
-  const headers = new Headers();
-  headers.set('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  headers.set('Access-Control-Allow-Headers', 'Content-Type');
-
-  if (allowedOrigins.includes(origin)) {
-    headers.set('Access-Control-Allow-Origin', origin);
-  }
-  return headers;
+    const headers = new Headers();
+    headers.set('Access-Control-Allow-Methods', 'POST, OPTIONS');
+    headers.set('Access-Control-Allow-Headers', 'Content-Type');
+    if (allowedOrigins.includes(origin)) {
+        headers.set('Access-Control-Allow-Origin', origin);
+    }
+    return headers;
 };
-
 const LeadSchema = z.object({
-  account_id: z.string().uuid().optional(),
-  full_name: z.string().min(1).optional(),
-  phone: z.string().min(3).optional(),
-  email: z.string().email().optional(),
-  notes: z.string().optional(),
-  utm_source: z.string().optional(),
-  utm_campaign: z.string().optional(),
-  utm_medium: z.string().optional(),
-  utm_term: z.string().optional(),
-  utm_content: z.string().optional(),
-  keyword: z.string().optional(),
-  // Add other schema fields here if they are part of your DB table
+    full_name: z.string().min(1).optional(),
+    phone: z.string().min(3).optional(),
+    email: z.string().email().optional(),
+    notes: z.string().optional(),
+    utm_source: z.string().optional(),
+    utm_campaign: z.string().optional(),
+    utm_medium: z.string().optional(),
+    utm_term: z.string().optional(),
+    utm_content: z.string().optional(),
+    keyword: z.string().optional(),
+    // other fields...
 });
 
-// Corrected the return type from Promise<any> to a specific type
 async function readBody(req: Request): Promise<Record<string, string>> {
-  try {
-    const contentType = req.headers.get('content-type') || '';
-    if (contentType.includes('application/json')) {
-        const json = await req.json() as Record<string, unknown>;
-        const stringifiedJson: Record<string, string> = {};
-        for (const key in json) {
-            if (json[key] !== null && json[key] !== undefined) {
-                stringifiedJson[key] = String(json[key]);
+    try {
+        const contentType = req.headers.get('content-type') || '';
+        if (contentType.includes('application/x-www-form-urlencoded') || contentType.includes('multipart/form-data')) {
+            const formData = await req.formData();
+            const body: Record<string, string> = {};
+            for (const [key, value] of formData.entries()) {
+                body[key] = String(value);
             }
+            return body;
         }
-        return stringifiedJson;
-    }
-    if (contentType.includes('application/x-www-form-urlencoded') || contentType.includes('multipart/form-data')) {
-        const formData = await req.formData();
-        const body: Record<string, string> = {};
-        for (const [key, value] of formData.entries()) {
-            body[key] = String(value);
+        if (contentType.includes('application/json')) {
+            const json = await req.json() as Record<string, unknown>;
+            const stringifiedJson: Record<string, string> = {};
+            for (const key in json) {
+                if (json[key] !== null && json[key] !== undefined) {
+                    stringifiedJson[key] = String(json[key]);
+                }
+            }
+            return stringifiedJson;
         }
-        return body;
+        return {};
+    } catch (error) {
+        console.error("Error reading request body:", error);
+        return {};
     }
-    return {};
-  } catch (error) {
-    console.error("Error reading request body:", error);
-    return {};
-  }
 }
 
 export async function OPTIONS(request: Request) {
@@ -70,11 +66,12 @@ export async function POST(req: Request) {
   try {
     const raw = await readBody(req);
 
+    // THIS IS THE CORRECTED LOGIC - THE "TRANSLATOR" IS BACK
     const cleaned = {
-      full_name: raw.full_name,
-      phone: raw.contact_phone,
-      email: raw.email,
-      notes: raw.message,
+      full_name: raw['form_fields[name]'] || raw.full_name,
+      phone: raw['form_fields[tel]'] || raw.contact_phone || raw.phone,
+      email: raw['form_fields[email]'] || raw.email,
+      notes: raw['form_fields[message]'] || raw.message || raw.notes,
 
       utm_source: raw.utm_source,
       utm_campaign: raw.utm_campaign,
