@@ -1,54 +1,110 @@
-import { NextResponse } from 'next/server'
+import { NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
 
-// This is a special debug-only version to capture the incoming request.
+// כותרות CORS בסיסיות
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type'
+};
 
-// FIX #1: Changed the return type from Promise<any> to a specific, safe type
+// ממיר טקסט urlencoded לאובייקט
+function parseFormUrlEncoded(text: string) {
+  const params = new URLSearchParams(text);
+  const obj: Record<string, string> = {};
+  params.forEach((v, k) => (obj[k] = v));
+  return obj;
+}
+
+// קריאת גוף הבקשה לפי ה-Content-Type
 async function readBody(req: Request): Promise<Record<string, unknown>> {
-    try {
-        const contentType = req.headers.get('content-type') || '';
-        if (contentType.includes('application/json')) {
-            return await req.json();
-        }
-        if (contentType.includes('application/x-www-form-urlencoded') || contentType.includes('multipart/form-data')) {
-            const formData = await req.formData();
-            const body: Record<string, string> = {};
-            for (const [key, value] of formData.entries()) {
-                body[key] = String(value);
-            }
-            return body;
-        }
-        return { error: 'Unsupported content type', contentType };
-    } catch (error) {
-        console.error("!!! CRITICAL ERROR reading request body:", error);
-        return { error: 'Failed to read body', details: (error as Error).message };
-    }
+  const ct = req.headers.get('content-type') || '';
+
+  if (ct.includes('application/json')) {
+    return await req.json();
+  }
+
+  if (ct.includes('application/x-www-form-urlencoded')) {
+    // זו הנקודה הקריטית: urlencoded = טקסט + URLSearchParams
+    const text = await req.text();
+    return parseFormUrlEncoded(text);
+  }
+
+  if (ct.includes('multipart/form-data')) {
+    const fd = await req.formData();
+    const obj: Record<string, string> = {};
+    fd.forEach((v, k) => {
+      if (typeof v === 'string') obj[k] = v;
+    });
+    return obj;
+  }
+
+  return {};
 }
 
 export async function POST(req: Request) {
   try {
-    console.log("--- REQUEST RECEIVED AT API ---");
+    console.log('--- REQUEST RECEIVED AT /api/leads/web ---');
 
-    const headers = Object.fromEntries(req.headers.entries());
-    console.log("REQUEST HEADERS:", JSON.stringify(headers, null, 2));
+    const raw = await readBody(req);
+    console.log('RAW BODY:', JSON.stringify(raw, null, 2));
 
-    const rawBody = await readBody(req);
-    console.log("RAW BODY PARSED:", JSON.stringify(rawBody, null, 2));
+    // מיפוי שדות מהטופס לעמודות בטבלה
+    const clean = {
+      status: 'new',
+      full_name: (raw as any).full_name ?? (raw as any).name ?? null,
+      phone: (raw as any).contact_phone ?? (raw as any).phone ?? null,
+      email: (raw as any).email ?? null,
+      source: (raw as any).utm_source ?? null,
+      campaign: (raw as any).utm_campaign ?? null,
+      medium: (raw as any).utm_medium ?? null,
+      term: (raw as any).utm_term ?? null,
+      content: (raw as any).utm_content ?? null,
+      // אפשר להוסיף שדות נוספים פה אם קיימים בטבלה
+    };
 
-    console.log("--- DEBUGGING FINISHED ---");
+    // לא מכניסים שורה ריקה
+    const hasAny = Object.values(clean).some(
+      v => v !== null && String(v).trim() !== ''
+    );
+    if (!hasAny) {
+      console.error('Refusing empty insert. Clean object is empty:', clean);
+      return new NextResponse(JSON.stringify({ ok: false, error: 'Empty payload' }), {
+        status: 400,
+        headers: corsHeaders
+      });
+    }
 
-  } catch (e) {
-    const errorMsg = e instanceof Error ? e.message : String(e);
-    console.error("!!! CRITICAL ERROR IN POST FUNCTION:", errorMsg);
+    // חיבור ל-Supabase - חובה להגדיר את המשתנים בסביבה של Vercel (ראה סעיף 2)
+    const supabase = createClient(
+      process.env.SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY! // בצד שרת בלבד!
+    );
+
+    const { error } = await supabase.from('leads').insert(clean);
+    if (error) {
+      console.error('Supabase insert error:', error);
+      return new NextResponse(JSON.stringify({ ok: false, error: error.message }), {
+        status: 500,
+        headers: corsHeaders
+      });
+    }
+
+    console.log('Lead inserted OK:', clean);
+    return new NextResponse(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: corsHeaders
+    });
+  } catch (err: any) {
+    console.error('CRITICAL ERROR:', err?.message || err);
+    return new NextResponse(JSON.stringify({ ok: false, error: 'Server error' }), {
+      status: 500,
+      headers: corsHeaders
+    });
   }
-
-  return NextResponse.json({ ok: true, message: "Debug request received and logged." });
 }
 
-// FIX #2: Added an underscore to the unused 'request' parameter to satisfy the linter
-export async function OPTIONS(_request: Request) {
-    const headers = new Headers();
-    headers.set('Access-control-allow-origin', '*');
-    headers.set('Access-Control-Allow-Methods', 'POST, OPTIONS');
-    headers.set('Access-Control-Allow-Headers', 'Content-Type');
-    return new Response(null, { headers });
+// מענה ל-OPTIONS (CORS)
+export function OPTIONS() {
+  return new NextResponse(null, { headers: corsHeaders as any });
 }
