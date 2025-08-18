@@ -1,47 +1,86 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 
-// כותרות CORS בסיסיות
-const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type'
+// ----- Types (בלי any) -----
+type RawPayload = Partial<{
+  full_name: string;
+  name: string;
+  contact_phone: string;
+  phone: string;
+  email: string;
+  utm_source: string;
+  utm_campaign: string;
+  utm_medium: string;
+  utm_term: string;
+  utm_content: string;
+}> & Record<string, unknown>;
+
+type CleanLead = {
+  status: 'new';
+  full_name: string | null;
+  phone: string | null;
+  email: string | null;
+  source: string | null;
+  campaign: string | null;
+  medium: string | null;
+  term: string | null;
+  content: string | null;
 };
 
-// ממיר טקסט urlencoded לאובייקט
-function parseFormUrlEncoded(text: string) {
+// ----- CORS -----
+const corsHeaders: Record<string, string> = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type',
+};
+
+// ----- Helpers -----
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+function formDataToObject(fd: FormData): Record<string, string> {
+  const obj: Record<string, string> = {};
+  fd.forEach((val, key) => {
+    if (typeof val === 'string') obj[key] = val;
+  });
+  return obj;
+}
+
+function urlEncodedToObject(text: string): Record<string, string> {
   const params = new URLSearchParams(text);
   const obj: Record<string, string> = {};
   params.forEach((v, k) => (obj[k] = v));
   return obj;
 }
 
-// קריאת גוף הבקשה לפי ה-Content-Type
-async function readBody(req: Request): Promise<Record<string, unknown>> {
+function hasAnyValue(obj: CleanLead): boolean {
+  return Object.values(obj).some((v) => typeof v === 'string' && v.trim() !== '');
+}
+
+// ----- Body parser (ללא any) -----
+async function readBody(req: Request): Promise<RawPayload> {
   const ct = req.headers.get('content-type') || '';
 
   if (ct.includes('application/json')) {
-    return await req.json();
+    const j = await req.json();
+    return isRecord(j) ? (j as RawPayload) : {};
   }
 
   if (ct.includes('application/x-www-form-urlencoded')) {
-    // זו הנקודה הקריטית: urlencoded = טקסט + URLSearchParams
     const text = await req.text();
-    return parseFormUrlEncoded(text);
+    return urlEncodedToObject(text) as RawPayload;
   }
 
   if (ct.includes('multipart/form-data')) {
     const fd = await req.formData();
-    const obj: Record<string, string> = {};
-    fd.forEach((v, k) => {
-      if (typeof v === 'string') obj[k] = v;
-    });
-    return obj;
+    return formDataToObject(fd) as RawPayload;
   }
 
   return {};
 }
 
+// ----- Handlers -----
 export async function POST(req: Request) {
   try {
     console.log('--- REQUEST RECEIVED AT /api/leads/web ---');
@@ -49,36 +88,37 @@ export async function POST(req: Request) {
     const raw = await readBody(req);
     console.log('RAW BODY:', JSON.stringify(raw, null, 2));
 
-    // מיפוי שדות מהטופס לעמודות בטבלה
-    const clean = {
+    // מיפוי מסודר ללא any
+    const clean: CleanLead = {
       status: 'new',
-      full_name: (raw as any).full_name ?? (raw as any).name ?? null,
-      phone: (raw as any).contact_phone ?? (raw as any).phone ?? null,
-      email: (raw as any).email ?? null,
-      source: (raw as any).utm_source ?? null,
-      campaign: (raw as any).utm_campaign ?? null,
-      medium: (raw as any).utm_medium ?? null,
-      term: (raw as any).utm_term ?? null,
-      content: (raw as any).utm_content ?? null,
-      // אפשר להוסיף שדות נוספים פה אם קיימים בטבלה
+      full_name:
+        (typeof raw.full_name === 'string' && raw.full_name) ||
+        (typeof raw.name === 'string' && raw.name) ||
+        null,
+      phone:
+        (typeof raw.contact_phone === 'string' && raw.contact_phone) ||
+        (typeof raw.phone === 'string' && raw.phone) ||
+        null,
+      email: (typeof raw.email === 'string' && raw.email) || null,
+      source: (typeof raw.utm_source === 'string' && raw.utm_source) || null,
+      campaign: (typeof raw.utm_campaign === 'string' && raw.utm_campaign) || null,
+      medium: (typeof raw.utm_medium === 'string' && raw.utm_medium) || null,
+      term: (typeof raw.utm_term === 'string' && raw.utm_term) || null,
+      content: (typeof raw.utm_content === 'string' && raw.utm_content) || null,
     };
 
-    // לא מכניסים שורה ריקה
-    const hasAny = Object.values(clean).some(
-      v => v !== null && String(v).trim() !== ''
-    );
-    if (!hasAny) {
+    if (!hasAnyValue(clean)) {
       console.error('Refusing empty insert. Clean object is empty:', clean);
       return new NextResponse(JSON.stringify({ ok: false, error: 'Empty payload' }), {
         status: 400,
-        headers: corsHeaders
+        headers: corsHeaders,
       });
     }
 
-    // חיבור ל-Supabase - חובה להגדיר את המשתנים בסביבה של Vercel (ראה סעיף 2)
+    // Supabase (צד שרת בלבד)
     const supabase = createClient(
-      process.env.SUPABASE_URL!,
-      process.env.SUPABASE_SERVICE_ROLE_KEY! // בצד שרת בלבד!
+      process.env.SUPABASE_URL as string,
+      process.env.SUPABASE_SERVICE_ROLE_KEY as string
     );
 
     const { error } = await supabase.from('leads').insert(clean);
@@ -86,25 +126,25 @@ export async function POST(req: Request) {
       console.error('Supabase insert error:', error);
       return new NextResponse(JSON.stringify({ ok: false, error: error.message }), {
         status: 500,
-        headers: corsHeaders
+        headers: corsHeaders,
       });
     }
 
     console.log('Lead inserted OK:', clean);
     return new NextResponse(JSON.stringify({ ok: true }), {
       status: 200,
-      headers: corsHeaders
+      headers: corsHeaders,
     });
-  } catch (err: any) {
-    console.error('CRITICAL ERROR:', err?.message || err);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('CRITICAL ERROR:', msg);
     return new NextResponse(JSON.stringify({ ok: false, error: 'Server error' }), {
       status: 500,
-      headers: corsHeaders
+      headers: corsHeaders,
     });
   }
 }
 
-// מענה ל-OPTIONS (CORS)
 export function OPTIONS() {
-  return new NextResponse(null, { headers: corsHeaders as any });
+  return new NextResponse(null, { headers: corsHeaders });
 }
