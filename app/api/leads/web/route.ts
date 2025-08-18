@@ -2,8 +2,8 @@ import { NextResponse } from 'next/server'
 import { z } from 'zod'
 import { supabaseAdmin } from '../../../../lib/db'
 
-// --- CORS & Schema remain the same ---
 const allowedOrigins = ['https://dr-shirihendel.co.il'];
+
 const corsHeaders = (origin: string) => {
     const headers = new Headers();
     headers.set('Access-Control-Allow-Methods', 'POST, OPTIONS');
@@ -13,6 +13,7 @@ const corsHeaders = (origin: string) => {
     }
     return headers;
 };
+
 const LeadSchema = z.object({
     full_name: z.string().min(1).optional(),
     phone: z.string().min(3).optional(),
@@ -24,7 +25,6 @@ const LeadSchema = z.object({
     utm_term: z.string().optional(),
     utm_content: z.string().optional(),
     keyword: z.string().optional(),
-    // other fields...
 });
 
 async function readBody(req: Request): Promise<Record<string, string>> {
@@ -61,54 +61,66 @@ export async function OPTIONS(request: Request) {
 }
 
 export async function POST(req: Request) {
-  const origin = req.headers.get('origin') ?? '';
+    const origin = req.headers.get('origin') ?? '';
 
-  try {
-    const raw = await readBody(req);
+    try {
+        const raw = await readBody(req);
 
-    // THIS IS THE CORRECTED LOGIC - THE "TRANSLATOR" IS BACK
-    const cleaned = {
-      full_name: raw['form_fields[name]'] || raw.full_name,
-      phone: raw['form_fields[tel]'] || raw.contact_phone || raw.phone,
-      email: raw['form_fields[email]'] || raw.email,
-      notes: raw['form_fields[message]'] || raw.message || raw.notes,
+        const cleaned = {
+            full_name: raw['form_fields[name]'] || raw.full_name,
+            phone: raw['form_fields[tel]'] || raw.contact_phone || raw.phone,
+            email: raw['form_fields[email]'] || raw.email,
+            notes: raw['form_fields[message]'] || raw.message || raw.notes,
+            utm_source: raw.utm_source,
+            utm_campaign: raw.utm_campaign,
+            utm_medium: raw.utm_medium,
+            utm_term: raw.utm_term,
+            utm_content: raw.utm_content,
+            keyword: raw.keyword,
+        };
+        
+        // --- THIS IS THE NEW VALIDATION BLOCK ---
+        if (!cleaned.full_name && !cleaned.phone && !cleaned.email) {
+            return NextResponse.json(
+                {
+                    ok: false,
+                    where: 'validation',
+                    message: 'Lead data (name, phone, email) is missing from the payload.',
+                    rawData: raw // We are sending the raw data back for debugging!
+                },
+                { status: 400, headers: corsHeaders(origin) }
+            );
+        }
+        // --- END OF NEW BLOCK ---
 
-      utm_source: raw.utm_source,
-      utm_campaign: raw.utm_campaign,
-      utm_medium: raw.utm_medium,
-      utm_term: raw.utm_term,
-      utm_content: raw.utm_content,
-      keyword: raw.keyword,
-    };
+        const parsed = LeadSchema.safeParse(cleaned);
 
-    const parsed = LeadSchema.safeParse(cleaned);
+        if (!parsed.success) {
+            return NextResponse.json(
+                { ok: false, where: 'validation', issues: parsed.error.issues },
+                { status: 400, headers: corsHeaders(origin) }
+            );
+        }
 
-    if (!parsed.success) {
-      return NextResponse.json(
-        { ok: false, where: 'validation', issues: parsed.error.issues },
-        { status: 400, headers: corsHeaders(origin) }
-      );
+        const { data, error } = await supabaseAdmin.from('leads').insert([parsed.data]).select('id').single();
+
+        if (error) {
+            return NextResponse.json(
+                { ok: false, where: 'supabase', message: error.message },
+                { status: 400, headers: corsHeaders(origin) }
+            );
+        }
+        
+        return NextResponse.json(
+            { ok: true, id: data.id },
+            { headers: corsHeaders(origin) }
+        );
+
+    } catch (e) {
+        const errorMsg = e instanceof Error ? e.message : String(e);
+        return NextResponse.json(
+            { ok: false, where: 'catch', error: errorMsg },
+            { status: 400, headers: corsHeaders(origin) }
+        );
     }
-
-    const { data, error } = await supabaseAdmin.from('leads').insert([parsed.data]).select('id').single();
-
-    if (error) {
-      return NextResponse.json(
-        { ok: false, where: 'supabase', message: error.message },
-        { status: 400, headers: corsHeaders(origin) }
-      );
-    }
-
-    return NextResponse.json(
-      { ok: true, id: data.id },
-      { headers: corsHeaders(origin) }
-    );
-
-  } catch (e) {
-    const errorMsg = e instanceof Error ? e.message : String(e);
-    return NextResponse.json(
-      { ok: false, where: 'catch', error: errorMsg },
-      { status: 400, headers: corsHeaders(origin) }
-    );
-  }
 }
