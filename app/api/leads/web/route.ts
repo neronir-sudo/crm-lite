@@ -27,16 +27,24 @@ const LeadSchema = z.object({
   utm_term: z.string().optional(),
   utm_content: z.string().optional(),
   keyword: z.string().optional(),
-  // ... you can add other schema fields here if needed
+  // Add other schema fields here if they are part of your DB table
 });
 
-async function readBody(req: Request): Promise<any> {
+// Corrected the return type from Promise<any> to a specific type
+async function readBody(req: Request): Promise<Record<string, string>> {
   try {
     const contentType = req.headers.get('content-type') || '';
     if (contentType.includes('application/json')) {
-        return await req.json();
+        const json = await req.json() as Record<string, unknown>;
+        const stringifiedJson: Record<string, string> = {};
+        for (const key in json) {
+            if (json[key] !== null && json[key] !== undefined) {
+                stringifiedJson[key] = String(json[key]);
+            }
+        }
+        return stringifiedJson;
     }
-    if (contentType.includes('application/x-www-form-urlencoded')) {
+    if (contentType.includes('application/x-www-form-urlencoded') || contentType.includes('multipart/form-data')) {
         const formData = await req.formData();
         const body: Record<string, string> = {};
         for (const [key, value] of formData.entries()) {
@@ -62,7 +70,6 @@ export async function POST(req: Request) {
   try {
     const raw = await readBody(req);
 
-    // This is the final, clean version, tailored to your Elementor Field IDs
     const cleaned = {
       full_name: raw.full_name,
       phone: raw.contact_phone,
