@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 
-// ---------- Types (בלי any) ----------
+// ---------- Types ----------
 type RawPayload = Partial<{
   full_name: string;
   name: string;
@@ -20,11 +20,11 @@ type CleanLead = {
   full_name: string | null;
   phone: string | null;
   email: string | null;
-  source: string | null;
-  campaign: string | null;
-  medium: string | null;
-  term: string | null;
-  content: string | null;
+  utm_source: string | null;
+  utm_campaign: string | null;
+  utm_medium: string | null;
+  utm_term: string | null;
+  utm_content: string | null;
 };
 
 type PgErrorLike = {
@@ -48,9 +48,7 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 
 function formDataToObject(fd: FormData): Record<string, string> {
   const obj: Record<string, string> = {};
-  fd.forEach((val, key) => {
-    if (typeof val === 'string') obj[key] = val;
-  });
+  fd.forEach((val, key) => { if (typeof val === 'string') obj[key] = val; });
   return obj;
 }
 
@@ -61,13 +59,13 @@ function urlEncodedToObject(text: string): Record<string, string> {
   return obj;
 }
 
-function hasAnyValue(obj: CleanLead): boolean {
-  return Object.values(obj).some((v) => typeof v === 'string' && v.trim() !== '');
-}
-
-function pick(obj: Record<string, unknown>, key: string): string | null {
+function pickStr(obj: Record<string, unknown>, key: string): string | null {
   const v = obj[key];
   return typeof v === 'string' && v.trim() !== '' ? v : null;
+}
+
+function hasAnyValue(obj: CleanLead): boolean {
+  return Object.values(obj).some((v) => typeof v === 'string' && v.trim() !== '');
 }
 
 function errToJson(e: unknown): PgErrorLike {
@@ -92,7 +90,7 @@ async function readBody(req: Request): Promise<RawPayload> {
   }
 
   if (ct.includes('application/x-www-form-urlencoded')) {
-    const text = await req.text(); // קריטי ל-urlencoded
+    const text = await req.text(); // חשוב ל-urlencoded
     return urlEncodedToObject(text) as RawPayload;
   }
 
@@ -109,7 +107,6 @@ export async function POST(req: Request) {
   try {
     const raw = await readBody(req);
 
-    // בדיקת משתני סביבה
     if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
       return new NextResponse(
         JSON.stringify({
@@ -122,18 +119,19 @@ export async function POST(req: Request) {
       );
     }
 
-    const rawRec: Record<string, unknown> = isRecord(raw) ? raw : {};
+    const r: Record<string, unknown> = isRecord(raw) ? raw : {};
 
+    // >>> המפתח כאן: הכנסה ישירות לעמודות עם הקידומת utm_ <<<
     const clean: CleanLead = {
       status: 'new',
-      full_name: pick(rawRec, 'full_name') ?? pick(rawRec, 'name'),
-      phone: pick(rawRec, 'contact_phone') ?? pick(rawRec, 'phone'),
-      email: pick(rawRec, 'email'),
-      source: pick(rawRec, 'utm_source'),
-      campaign: pick(rawRec, 'utm_campaign'),
-      medium: pick(rawRec, 'utm_medium'),
-      term: pick(rawRec, 'utm_term'),
-      content: pick(rawRec, 'utm_content'),
+      full_name: pickStr(r, 'full_name') ?? pickStr(r, 'name'),
+      phone:     pickStr(r, 'contact_phone') ?? pickStr(r, 'phone'),
+      email:     pickStr(r, 'email'),
+      utm_source:   pickStr(r, 'utm_source'),
+      utm_campaign: pickStr(r, 'utm_campaign'),
+      utm_medium:   pickStr(r, 'utm_medium'),
+      utm_term:     pickStr(r, 'utm_term'),
+      utm_content:  pickStr(r, 'utm_content'),
     };
 
     if (!hasAnyValue(clean)) {
@@ -152,10 +150,10 @@ export async function POST(req: Request) {
 
     if (error) {
       const ej = errToJson(error);
-      return new NextResponse(
-        JSON.stringify({ ok: false, supabase_error: ej, clean }),
-        { status: 500, headers: corsHeaders }
-      );
+      return new NextResponse(JSON.stringify({ ok: false, supabase_error: ej, clean }), {
+        status: 500,
+        headers: corsHeaders,
+      });
     }
 
     return new NextResponse(JSON.stringify({ ok: true, inserted: clean }), {
