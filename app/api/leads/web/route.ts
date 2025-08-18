@@ -64,41 +64,96 @@ function pickStr(obj: Record<string, unknown>, key: string): string | null {
   return typeof v === 'string' && v.trim() !== '' ? v : null;
 }
 
-function hasAnyValue(obj: CleanLead): boolean {
-  return Object.values(obj).some((v) => typeof v === 'string' && v.trim() !== '');
-}
-
 function errToJson(e: unknown): PgErrorLike {
   if (isRecord(e)) {
     return {
       message: typeof e.message === 'string' ? e.message : 'Unknown error',
-      details: typeof e.details === 'string' ? e.details : null,
-      hint: typeof e.hint === 'string' ? e.hint : null,
-      code: typeof e.code === 'string' ? e.code : null,
+      details: typeof (e as { details?: unknown }).details === 'string' ? (e as { details: string }).details : null,
+      hint: typeof (e as { hint?: unknown }).hint === 'string' ? (e as { hint: string }).hint : null,
+      code: typeof (e as { code?: unknown }).code === 'string' ? (e as { code: string }).code : null,
     };
   }
   return { message: String(e), details: null, hint: null, code: null };
 }
 
-// ---------- Body parser ----------
-async function readBody(req: Request): Promise<RawPayload> {
-  const ct = req.headers.get('content-type') || '';
+// -------- Elementor field normalization --------
+// תומך בכל הצורות הנפוצות של אלמנטור:
+// 1) form_fields[email]=...
+// 2) fields[0][id]=email & fields[0][value]=...
+// 3) "<תווית>_email"  (לייבלים בעברית עם מזהה בסוף)
+function normalizeElementorKeys(raw: Record<string, unknown>): Record<string, string> {
+  const normalized: Record<string, string> = {};
+  const allowed = new Set([
+    'full_name', 'email', 'contact_phone',
+    'utm_source', 'utm_campaign', 'utm_medium', 'utm_term', 'utm_content',
+    'name', 'phone' // גיבויים כלליים
+  ]);
 
+  // אוסף ביניים לצורה fields[i][id/value]
+  const byIndex: Record<string, { id?: string; value?: string }> = {};
+
+  for (const [k, v] of Object.entries(raw)) {
+    if (typeof v !== 'string') continue;
+
+    // form_fields[xxx]
+    const m1 = k.match(/^form_fields\[(.+)\]$/);
+    if (m1) {
+      const id = m1[1];
+      normalized[id] = v;
+      continue;
+    }
+
+    // fields[0][id] / fields[0][value]
+    const m2 = k.match(/^fields\[(\d+)\]\[(id|value)\]$/);
+    if (m2) {
+      const idx = m2[1];
+      byIndex[idx] = byIndex[idx] || {};
+      (byIndex[idx] as Record<string, string>)[m2[2]] = v;
+      continue;
+    }
+
+    // label_id -> ניקח את החלק האחרון אחרי _
+    const last = k.split('_').pop() || '';
+    if (allowed.has(last)) {
+      normalized[last] = v;
+      continue;
+    }
+
+    // גם אם השם כבר מדויק ("email", "full_name" וכו')
+    if (allowed.has(k)) {
+      normalized[k] = v;
+    }
+  }
+
+  // מרכיבים מהצורה fields[i][id/value]
+  for (const it of Object.values(byIndex)) {
+    if (it.id && typeof it.value === 'string') {
+      normalized[it.id] = it.value;
+    }
+  }
+
+  return normalized;
+}
+
+function hasAnyValue(obj: CleanLead): boolean {
+  return Object.values(obj).some((v) => typeof v === 'string' && v.trim() !== '');
+}
+
+// ---------- Body parser ----------
+async function readBody(req: Request): Promise<Record<string, unknown>> {
+  const ct = req.headers.get('content-type') || '';
   if (ct.includes('application/json')) {
     const j = await req.json();
-    return isRecord(j) ? (j as RawPayload) : {};
+    return isRecord(j) ? j : {};
   }
-
   if (ct.includes('application/x-www-form-urlencoded')) {
-    const text = await req.text(); // חשוב ל-urlencoded
-    return urlEncodedToObject(text) as RawPayload;
+    const text = await req.text();
+    return urlEncodedToObject(text);
   }
-
   if (ct.includes('multipart/form-data')) {
     const fd = await req.formData();
-    return formDataToObject(fd) as RawPayload;
+    return formDataToObject(fd);
   }
-
   return {};
 }
 
@@ -106,6 +161,7 @@ async function readBody(req: Request): Promise<RawPayload> {
 export async function POST(req: Request) {
   try {
     const raw = await readBody(req);
+    const norm = normalizeElementorKeys(isRecord(raw) ? raw : {});
 
     if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
       return new NextResponse(
@@ -119,24 +175,22 @@ export async function POST(req: Request) {
       );
     }
 
-    const r: Record<string, unknown> = isRecord(raw) ? raw : {};
-
-    // >>> המפתח כאן: הכנסה ישירות לעמודות עם הקידומת utm_ <<<
+    // נכניס לטבלה **עם הקידומת utm_** כמו בסכמה שלך
     const clean: CleanLead = {
       status: 'new',
-      full_name: pickStr(r, 'full_name') ?? pickStr(r, 'name'),
-      phone:     pickStr(r, 'contact_phone') ?? pickStr(r, 'phone'),
-      email:     pickStr(r, 'email'),
-      utm_source:   pickStr(r, 'utm_source'),
-      utm_campaign: pickStr(r, 'utm_campaign'),
-      utm_medium:   pickStr(r, 'utm_medium'),
-      utm_term:     pickStr(r, 'utm_term'),
-      utm_content:  pickStr(r, 'utm_content'),
+      full_name: pickStr(norm, 'full_name') ?? pickStr(norm, 'name'),
+      phone:     pickStr(norm, 'contact_phone') ?? pickStr(norm, 'phone'),
+      email:     pickStr(norm, 'email'),
+      utm_source:   pickStr(norm, 'utm_source'),
+      utm_campaign: pickStr(norm, 'utm_campaign'),
+      utm_medium:   pickStr(norm, 'utm_medium'),
+      utm_term:     pickStr(norm, 'utm_term'),
+      utm_content:  pickStr(norm, 'utm_content'),
     };
 
     if (!hasAnyValue(clean)) {
       return new NextResponse(
-        JSON.stringify({ ok: false, error: 'Empty payload after parsing', raw }),
+        JSON.stringify({ ok: false, error: 'Empty payload after parsing', receivedKeys: Object.keys(norm) }),
         { status: 400, headers: corsHeaders }
       );
     }
@@ -147,13 +201,11 @@ export async function POST(req: Request) {
     );
 
     const { error } = await supabase.from('leads').insert(clean);
-
     if (error) {
-      const ej = errToJson(error);
-      return new NextResponse(JSON.stringify({ ok: false, supabase_error: ej, clean }), {
-        status: 500,
-        headers: corsHeaders,
-      });
+      return new NextResponse(
+        JSON.stringify({ ok: false, supabase_error: errToJson(error), clean }),
+        { status: 500, headers: corsHeaders }
+      );
     }
 
     return new NextResponse(JSON.stringify({ ok: true, inserted: clean }), {
@@ -161,8 +213,7 @@ export async function POST(req: Request) {
       headers: corsHeaders,
     });
   } catch (err) {
-    const ej = errToJson(err);
-    return new NextResponse(JSON.stringify({ ok: false, error: ej }), {
+    return new NextResponse(JSON.stringify({ ok: false, error: errToJson(err) }), {
       status: 500,
       headers: corsHeaders,
     });
