@@ -1,7 +1,6 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 
-// ----- Types (בלי any) -----
 type RawPayload = Partial<{
   full_name: string;
   name: string;
@@ -27,78 +26,69 @@ type CleanLead = {
   content: string | null;
 };
 
-// ----- CORS -----
 const corsHeaders: Record<string, string> = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type',
 };
 
-// ----- Helpers -----
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
 }
-
 function formDataToObject(fd: FormData): Record<string, string> {
   const obj: Record<string, string> = {};
-  fd.forEach((val, key) => {
-    if (typeof val === 'string') obj[key] = val;
-  });
+  fd.forEach((val, key) => { if (typeof val === 'string') obj[key] = val; });
   return obj;
 }
-
 function urlEncodedToObject(text: string): Record<string, string> {
   const params = new URLSearchParams(text);
   const obj: Record<string, string> = {};
   params.forEach((v, k) => (obj[k] = v));
   return obj;
 }
-
 function hasAnyValue(obj: CleanLead): boolean {
   return Object.values(obj).some((v) => typeof v === 'string' && v.trim() !== '');
 }
 
-// ----- Body parser (ללא any) -----
 async function readBody(req: Request): Promise<RawPayload> {
   const ct = req.headers.get('content-type') || '';
-
   if (ct.includes('application/json')) {
     const j = await req.json();
     return isRecord(j) ? (j as RawPayload) : {};
   }
-
   if (ct.includes('application/x-www-form-urlencoded')) {
-    const text = await req.text();
+    const text = await req.text();              // <-- נקודה קריטית
     return urlEncodedToObject(text) as RawPayload;
   }
-
   if (ct.includes('multipart/form-data')) {
     const fd = await req.formData();
     return formDataToObject(fd) as RawPayload;
   }
-
   return {};
 }
 
-// ----- Handlers -----
 export async function POST(req: Request) {
   try {
-    console.log('--- REQUEST RECEIVED AT /api/leads/web ---');
-
     const raw = await readBody(req);
-    console.log('RAW BODY:', JSON.stringify(raw, null, 2));
 
-    // מיפוי מסודר ללא any
+    // בדיקת משתני סביבה – אם חסר, נחזיר הודעה ברורה
+    const haveUrl = !!process.env.SUPABASE_URL;
+    const haveKey = !!process.env.SUPABASE_SERVICE_ROLE_KEY;
+    if (!haveUrl || !haveKey) {
+      return new NextResponse(
+        JSON.stringify({ ok: false, error: 'Missing Supabase env vars', haveUrl, haveKey }),
+        { status: 500, headers: corsHeaders }
+      );
+    }
+
     const clean: CleanLead = {
       status: 'new',
       full_name:
         (typeof raw.full_name === 'string' && raw.full_name) ||
-        (typeof raw.name === 'string' && raw.name) ||
-        null,
+        (typeof raw.name === 'string' && raw.name) || null,
       phone:
         (typeof raw.contact_phone === 'string' && raw.contact_phone) ||
-        (typeof raw.phone === 'string' && raw.phone) ||
-        null,
+        (typeof raw.phone === 'string' && raw.phone) || null,
       email: (typeof raw.email === 'string' && raw.email) || null,
       source: (typeof raw.utm_source === 'string' && raw.utm_source) || null,
       campaign: (typeof raw.utm_campaign === 'string' && raw.utm_campaign) || null,
@@ -108,37 +98,43 @@ export async function POST(req: Request) {
     };
 
     if (!hasAnyValue(clean)) {
-      console.error('Refusing empty insert. Clean object is empty:', clean);
-      return new NextResponse(JSON.stringify({ ok: false, error: 'Empty payload' }), {
-        status: 400,
-        headers: corsHeaders,
-      });
+      return new NextResponse(
+        JSON.stringify({ ok: false, error: 'Empty payload after parsing', raw }),
+        { status: 400, headers: corsHeaders }
+      );
     }
 
-    // Supabase (צד שרת בלבד)
     const supabase = createClient(
       process.env.SUPABASE_URL as string,
       process.env.SUPABASE_SERVICE_ROLE_KEY as string
     );
 
+    // ננסה להכניס. אם יש עמודה חסרה בטבלה, תקבל הודעה מפורשת.
     const { error } = await supabase.from('leads').insert(clean);
+
     if (error) {
-      console.error('Supabase insert error:', error);
-      return new NextResponse(JSON.stringify({ ok: false, error: error.message }), {
-        status: 500,
-        headers: corsHeaders,
-      });
+      return new NextResponse(
+        JSON.stringify({
+          ok: false,
+          supabase_error: {
+            message: error.message,
+            details: (error as any).details ?? null,
+            hint: (error as any).hint ?? null,
+            code: (error as any).code ?? null,
+          },
+          clean,
+        }),
+        { status: 500, headers: corsHeaders }
+      );
     }
 
-    console.log('Lead inserted OK:', clean);
-    return new NextResponse(JSON.stringify({ ok: true }), {
+    return new NextResponse(JSON.stringify({ ok: true, inserted: clean }), {
       status: 200,
       headers: corsHeaders,
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.error('CRITICAL ERROR:', msg);
-    return new NextResponse(JSON.stringify({ ok: false, error: 'Server error' }), {
+    return new NextResponse(JSON.stringify({ ok: false, error: msg }), {
       status: 500,
       headers: corsHeaders,
     });
@@ -148,3 +144,4 @@ export async function POST(req: Request) {
 export function OPTIONS() {
   return new NextResponse(null, { headers: corsHeaders });
 }
+
