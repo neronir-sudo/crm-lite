@@ -1,6 +1,6 @@
 // crm-lite/app/dashboard/leads/page.tsx
 
-import { supabaseAdmin } from '../../../../lib/db'
+import { supabaseAdmin } from '@/lib/db'
 
 export default async function LeadsPage() {
   const { data: leads, error } = await supabaseAdmin
