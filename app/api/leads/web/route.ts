@@ -1,35 +1,13 @@
 import { NextResponse } from 'next/server'
-import { z } from 'zod'
-import { supabaseAdmin } from '../../../../lib/db'
 
-const allowedOrigins = ['https://dr-shirihendel.co.il'];
+// This is a special debug-only version to capture the incoming request.
 
-const corsHeaders = (origin: string) => {
-    const headers = new Headers();
-    headers.set('Access-Control-Allow-Methods', 'POST, OPTIONS');
-    headers.set('Access-Control-Allow-Headers', 'Content-Type');
-    if (allowedOrigins.includes(origin)) {
-        headers.set('Access-Control-Allow-Origin', origin);
-    }
-    return headers;
-};
-
-const LeadSchema = z.object({
-    full_name: z.string().min(1).optional(),
-    phone: z.string().min(3).optional(),
-    email: z.string().email().optional(),
-    notes: z.string().optional(),
-    utm_source: z.string().optional(),
-    utm_campaign: z.string().optional(),
-    utm_medium: z.string().optional(),
-    utm_term: z.string().optional(),
-    utm_content: z.string().optional(),
-    keyword: z.string().optional(),
-});
-
-async function readBody(req: Request): Promise<Record<string, string>> {
+async function readBody(req: Request): Promise<Record<string, any>> {
     try {
         const contentType = req.headers.get('content-type') || '';
+        if (contentType.includes('application/json')) {
+            return await req.json();
+        }
         if (contentType.includes('application/x-www-form-urlencoded') || contentType.includes('multipart/form-data')) {
             const formData = await req.formData();
             const body: Record<string, string> = {};
@@ -38,89 +16,39 @@ async function readBody(req: Request): Promise<Record<string, string>> {
             }
             return body;
         }
-        if (contentType.includes('application/json')) {
-            const json = await req.json() as Record<string, unknown>;
-            const stringifiedJson: Record<string, string> = {};
-            for (const key in json) {
-                if (json[key] !== null && json[key] !== undefined) {
-                    stringifiedJson[key] = String(json[key]);
-                }
-            }
-            return stringifiedJson;
-        }
-        return {};
+        return { error: 'Unsupported content type', contentType };
     } catch (error) {
-        console.error("Error reading request body:", error);
-        return {};
+        console.error("!!! CRITICAL ERROR reading request body:", error);
+        return { error: 'Failed to read body', details: (error as Error).message };
     }
-}
-
-export async function OPTIONS(request: Request) {
-    const origin = request.headers.get('origin') ?? '';
-    return new Response(null, { headers: corsHeaders(origin) });
 }
 
 export async function POST(req: Request) {
-    const origin = req.headers.get('origin') ?? '';
+  try {
+    console.log("--- REQUEST RECEIVED AT API ---");
 
-    try {
-        const raw = await readBody(req);
+    const headers = Object.fromEntries(req.headers.entries());
+    console.log("REQUEST HEADERS:", JSON.stringify(headers, null, 2));
 
-        const cleaned = {
-            full_name: raw['form_fields[name]'] || raw.full_name,
-            phone: raw['form_fields[tel]'] || raw.contact_phone || raw.phone,
-            email: raw['form_fields[email]'] || raw.email,
-            notes: raw['form_fields[message]'] || raw.message || raw.notes,
-            utm_source: raw.utm_source,
-            utm_campaign: raw.utm_campaign,
-            utm_medium: raw.utm_medium,
-            utm_term: raw.utm_term,
-            utm_content: raw.utm_content,
-            keyword: raw.keyword,
-        };
-        
-        // --- THIS IS THE NEW VALIDATION BLOCK ---
-        if (!cleaned.full_name && !cleaned.phone && !cleaned.email) {
-            return NextResponse.json(
-                {
-                    ok: false,
-                    where: 'validation',
-                    message: 'Lead data (name, phone, email) is missing from the payload.',
-                    rawData: raw // We are sending the raw data back for debugging!
-                },
-                { status: 400, headers: corsHeaders(origin) }
-            );
-        }
-        // --- END OF NEW BLOCK ---
+    const rawBody = await readBody(req);
+    console.log("RAW BODY PARSED:", JSON.stringify(rawBody, null, 2));
 
-        const parsed = LeadSchema.safeParse(cleaned);
+    console.log("--- DEBUGGING FINISHED ---");
 
-        if (!parsed.success) {
-            return NextResponse.json(
-                { ok: false, where: 'validation', issues: parsed.error.issues },
-                { status: 400, headers: corsHeaders(origin) }
-            );
-        }
+  } catch (e) {
+    const errorMsg = e instanceof Error ? e.message : String(e);
+    console.error("!!! CRITICAL ERROR IN POST FUNCTION:", errorMsg);
+  }
 
-        const { data, error } = await supabaseAdmin.from('leads').insert([parsed.data]).select('id').single();
+  // We will always return a success message, so we can see the logs.
+  return NextResponse.json({ ok: true, message: "Debug request received and logged." });
+}
 
-        if (error) {
-            return NextResponse.json(
-                { ok: false, where: 'supabase', message: error.message },
-                { status: 400, headers: corsHeaders(origin) }
-            );
-        }
-        
-        return NextResponse.json(
-            { ok: true, id: data.id },
-            { headers: corsHeaders(origin) }
-        );
-
-    } catch (e) {
-        const errorMsg = e instanceof Error ? e.message : String(e);
-        return NextResponse.json(
-            { ok: false, where: 'catch', error: errorMsg },
-            { status: 400, headers: corsHeaders(origin) }
-        );
-    }
+// We keep the OPTIONS handler for CORS preflight
+export async function OPTIONS(request: Request) {
+    const headers = new Headers();
+    headers.set('Access-Control-Allow-Origin', '*'); // Allow all for debugging
+    headers.set('Access-Control-Allow-Methods', 'POST, OPTIONS');
+    headers.set('Access-Control-Allow-Headers', 'Content-Type');
+    return new Response(null, { headers });
 }
