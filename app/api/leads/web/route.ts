@@ -2,7 +2,8 @@ import { NextResponse } from 'next/server'
 
 // This is a special debug-only version to capture the incoming request.
 
-async function readBody(req: Request): Promise<Record<string, any>> {
+// FIX #1: Changed the return type from Promise<any> to a specific, safe type
+async function readBody(req: Request): Promise<Record<string, unknown>> {
     try {
         const contentType = req.headers.get('content-type') || '';
         if (contentType.includes('application/json')) {
@@ -40,14 +41,13 @@ export async function POST(req: Request) {
     console.error("!!! CRITICAL ERROR IN POST FUNCTION:", errorMsg);
   }
 
-  // We will always return a success message, so we can see the logs.
   return NextResponse.json({ ok: true, message: "Debug request received and logged." });
 }
 
-// We keep the OPTIONS handler for CORS preflight
-export async function OPTIONS(request: Request) {
+// FIX #2: Added an underscore to the unused 'request' parameter to satisfy the linter
+export async function OPTIONS(_request: Request) {
     const headers = new Headers();
-    headers.set('Access-Control-Allow-Origin', '*'); // Allow all for debugging
+    headers.set('Access-control-allow-origin', '*');
     headers.set('Access-Control-Allow-Methods', 'POST, OPTIONS');
     headers.set('Access-Control-Allow-Headers', 'Content-Type');
     return new Response(null, { headers });
