@@ -1,71 +1,90 @@
-import { supabaseAdmin } from '@/lib/db'
+// app/dashboard/leads/page.tsx
+import { createClient } from '@supabase/supabase-js';
 
-// יצרנו "תעודת זהות" רשמית עבור כל ליד
-// היא אומרת למערכת בדיוק אילו שדות קיימים ומה הסוג שלהם
-interface Lead {
+type LeadRow = {
   id: string;
   created_at: string;
+  status: string | null;
   full_name: string | null;
   phone: string | null;
   email: string | null;
-  status: string | null;
   utm_source: string | null;
   utm_campaign: string | null;
-  keyword: string | null;
-}
+  utm_medium: string | null;
+  utm_term: string | null;
+  utm_content: string | null;
+  // נפילות-חסד לשמות ישנים אם קיימים בטבלה
+  source?: string | null;
+  campaign?: string | null;
+  keyword?: string | null;
+};
 
 export default async function LeadsPage() {
-  // כאן אנו אומרים ל-Supabase שאנחנו מצפים לקבל מערך של לידים שתואם לתעודת הזהות
-  const { data: leads, error } = await supabaseAdmin
+  const url = process.env.SUPABASE_URL!;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+  const sb = createClient(url, key);
+
+  const { data, error } = await sb
     .from('leads')
     .select('*')
     .order('created_at', { ascending: false })
-    .returns<Lead[]>(); // This tells TypeScript what to expect
+    .limit(500);
 
   if (error) {
-    return <p>אירעה שגיאה בטעינת הלידים: {error.message}</p>
+    return <pre style={{ direction: 'ltr', padding: 16 }}>Error: {JSON.stringify(error, null, 2)}</pre>;
   }
 
-  if (!leads || leads.length === 0) {
-    return <p>עדיין אין לידים במערכת.</p>
-  }
+  const rows = (data ?? []) as LeadRow[];
 
   return (
-    <div style={{ padding: '20px', direction: 'rtl' }}>
-      <h1>רשומת לידים</h1>
-      <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: '20px', tableLayout: 'fixed' }}>
+    <div style={{ padding: 24, direction: 'rtl', fontFamily: 'sans-serif' }}>
+      <h2>רשומת לידים</h2>
+      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
         <thead>
-          <tr style={{ backgroundColor: '#f2f2f2' }}>
-            <th style={{ width: '15%', padding: '8px', border: '1px solid #ddd', textAlign: 'right' }}>תאריך יצירה</th>
-            <th style={{ width: '15%', padding: '8px', border: '1px solid #ddd', textAlign: 'right' }}>שם מלא</th>
-            <th style={{ width: '10%', padding: '8px', border: '1px solid #ddd', textAlign: 'right' }}>טלפון</th>
-            <th style={{ width: '15%', padding: '8px', border: '1px solid #ddd', textAlign: 'right' }}>אימייל</th>
-            <th style={{ width: '10%', padding: '8px', border: '1px solid #ddd', textAlign: 'right' }}>מקור (Source)</th>
-            <th style={{ width: '15%', padding: '8px', border: '1px solid #ddd', textAlign: 'right' }}>קמפיין (Campaign)</th>
-            <th style={{ width: '15%', padding: '8px', border: '1px solid #ddd', textAlign: 'right' }}>מילת מפתח (Keyword)</th>
-            <th style={{ width: '5%', padding: '8px', border: '1px solid #ddd', textAlign: 'right' }}>סטטוס</th>
+          <tr style={{ background: '#f6f6f6' }}>
+            <th style={th}>סטטוס</th>
+            <th style={th}>(Keyword) מילות מפתח</th>
+            <th style={th}>(Campaign) קמפיין</th>
+            <th style={th}>(Source) מקור</th>
+            <th style={th}>אימייל</th>
+            <th style={th}>טלפון</th>
+            <th style={th}>שם מלא</th>
+            <th style={th}>תאריך יצירה</th>
           </tr>
         </thead>
         <tbody>
-          {/* עכשיו אנחנו משתמשים בתעודת הזהות במקום ב-'any' */}
-          {leads.map((lead: Lead) => (
-            <tr key={lead.id}>
-              <td style={{ padding: '8px', border: '1px solid #ddd', wordWrap: 'break-word' }}>
-                {new Date(lead.created_at).toLocaleString('he-IL')}
-              </td>
-              <td style={{ padding: '8px', border: '1px solid #ddd', wordWrap: 'break-word' }}>{lead.full_name}</td>
-              <td style={{ padding: '8px', border: '1px solid #ddd', wordWrap: 'break-word' }}>{lead.phone}</td>
-              <td style={{ padding: '8px', border: '1px solid #ddd', wordWrap: 'break-word' }}>{lead.email}</td>
-              <td style={{ padding: '8px', border: '1px solid #ddd', wordWrap: 'break-word' }}>{lead.utm_source}</td>
-              <td style={{ padding: '8px', border: '1px solid #ddd', wordWrap: 'break-word' }}>{lead.utm_campaign}</td>
-              <td style={{ padding: '8px', border: '1px solid #ddd', wordWrap: 'break-word' }}>{lead.keyword}</td>
-              <td style={{ padding: '8px', border: '1px solid #ddd', wordWrap: 'break-word' }}>{lead.status}</td>
-            </tr>
-          ))}
+          {rows.map((r) => {
+            const source   = r.utm_source   ?? r.source   ?? '';
+            const campaign = r.utm_campaign ?? r.campaign ?? '';
+            const keyword  = r.utm_term     ?? r.keyword  ?? '';
+            return (
+              <tr key={r.id} style={{ borderBottom: '1px solid #eee' }}>
+                <td style={td}>{r.status ?? 'new'}</td>
+                <td style={td}>{keyword}</td>
+                <td style={td}>{campaign}</td>
+                <td style={td}>{source}</td>
+                <td style={td}>{r.email ?? ''}</td>
+                <td style={td}>{r.phone ?? ''}</td>
+                <td style={td}>{r.full_name ?? ''}</td>
+                <td style={td}>{new Date(r.created_at).toLocaleString('he-IL')}</td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>
-  )
+  );
 }
 
-export const revalidate = 0;
+const th: React.CSSProperties = {
+  textAlign: 'right',
+  padding: '8px 10px',
+  borderBottom: '1px solid #ddd',
+  whiteSpace: 'nowrap',
+};
+
+const td: React.CSSProperties = {
+  textAlign: 'right',
+  padding: '8px 10px',
+  whiteSpace: 'nowrap',
+};
