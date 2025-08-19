@@ -1,19 +1,7 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 
-// ---------- Types ----------
-type RawPayload = Partial<{
-  full_name: string;
-  name: string;
-  contact_phone: string;
-  phone: string;
-  email: string;
-  utm_source: string;
-  utm_campaign: string;
-  utm_medium: string;
-  utm_term: string;
-  utm_content: string;
-}> & Record<string, unknown>;
+type Raw = Record<string, unknown>;
 
 type CleanLead = {
   status: 'new';
@@ -25,47 +13,37 @@ type CleanLead = {
   utm_medium: string | null;
   utm_term: string | null;
   utm_content: string | null;
+  landing_page: string | null; // יש לך עמודה כזו בטבלה
 };
 
-type PgErrorLike = {
-  message: string;
-  details: string | null;
-  hint: string | null;
-  code: string | null;
-};
+type PgErr = { message: string; details: string | null; hint: string | null; code: string | null };
 
-// ---------- CORS ----------
-const corsHeaders: Record<string, string> = {
+const cors: Record<string, string> = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type',
 };
 
-// ---------- Helpers ----------
-function isRecord(v: unknown): v is Record<string, unknown> {
+function isRec(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
 }
-
-function formDataToObject(fd: FormData): Record<string, string> {
-  const obj: Record<string, string> = {};
-  fd.forEach((val, key) => { if (typeof val === 'string') obj[key] = val; });
-  return obj;
-}
-
-function urlEncodedToObject(text: string): Record<string, string> {
-  const params = new URLSearchParams(text);
-  const obj: Record<string, string> = {};
-  params.forEach((v, k) => (obj[k] = v));
-  return obj;
-}
-
-function pickStr(obj: Record<string, unknown>, key: string): string | null {
+function pickStr(obj: Raw, key: string): string | null {
   const v = obj[key];
   return typeof v === 'string' && v.trim() !== '' ? v : null;
 }
-
-function errToJson(e: unknown): PgErrorLike {
-  if (isRecord(e)) {
+function formDataToObj(fd: FormData): Record<string, string> {
+  const o: Record<string, string> = {};
+  fd.forEach((val, key) => { if (typeof val === 'string') o[key] = val; });
+  return o;
+}
+function urlEncToObj(txt: string): Record<string, string> {
+  const p = new URLSearchParams(txt);
+  const o: Record<string, string> = {};
+  p.forEach((v, k) => (o[k] = v));
+  return o;
+}
+function errJson(e: unknown): PgErr {
+  if (isRec(e)) {
     return {
       message: typeof e.message === 'string' ? e.message : 'Unknown error',
       details: typeof (e as { details?: unknown }).details === 'string' ? (e as { details: string }).details : null,
@@ -76,30 +54,44 @@ function errToJson(e: unknown): PgErrorLike {
   return { message: String(e), details: null, hint: null, code: null };
 }
 
-// -------- Elementor field normalization --------
-// תומך בכל הצורות הנפוצות של אלמנטור:
-// 1) form_fields[email]=...
-// 2) fields[0][id]=email & fields[0][value]=...
-// 3) "<תווית>_email"  (לייבלים בעברית עם מזהה בסוף)
-function normalizeElementorKeys(raw: Record<string, unknown>): Record<string, string> {
-  const normalized: Record<string, string> = {};
-  const allowed = new Set([
-    'full_name', 'email', 'contact_phone',
-    'utm_source', 'utm_campaign', 'utm_medium', 'utm_term', 'utm_content',
-    'name', 'phone' // גיבויים כלליים
-  ]);
+// --- חליצת UTM מ-URL ---
+function utmFromUrl(urlStr: string | null): Partial<CleanLead> {
+  if (!urlStr) return {};
+  try {
+    const u = new URL(urlStr);
+    const qp = u.searchParams;
+    const source = qp.get('utm_source');
+    const campaign = qp.get('utm_campaign');
+    const medium = qp.get('utm_medium');
+    const content = qp.get('utm_content');
+    const term = qp.get('utm_term') ?? qp.get('keyword'); // תמיכה ב-keyword
+    return {
+      utm_source: source ?? null,
+      utm_campaign: campaign ?? null,
+      utm_medium: medium ?? null,
+      utm_content: content ?? null,
+      utm_term: term ?? null,
+    } as Partial<CleanLead>;
+  } catch {
+    return {};
+  }
+}
 
-  // אוסף ביניים לצורה fields[i][id/value]
+// --- נורמליזציה לפורמטים של אלמנטור ---
+function normalizeElementor(raw: Raw): Raw {
+  const out: Raw = {};
   const byIndex: Record<string, { id?: string; value?: string }> = {};
+  const ignoreExact = new Set(['form_name', 'form_id']); // לא להתבלבל עם name האמיתי
 
   for (const [k, v] of Object.entries(raw)) {
     if (typeof v !== 'string') continue;
 
+    if (ignoreExact.has(k)) continue;
+
     // form_fields[xxx]
     const m1 = k.match(/^form_fields\[(.+)\]$/);
     if (m1) {
-      const id = m1[1];
-      normalized[id] = v;
+      out[m1[1]] = v;
       continue;
     }
 
@@ -112,114 +104,109 @@ function normalizeElementorKeys(raw: Record<string, unknown>): Record<string, st
       continue;
     }
 
-    // label_id -> ניקח את החלק האחרון אחרי _
-    const last = k.split('_').pop() || '';
-    if (allowed.has(last)) {
-      normalized[last] = v;
+    // לייבלים: נתעלם מ-form_name. נשמור שדות באנגלית אם הם מדויקים
+    const allowedDirect = new Set([
+      'full_name', 'email', 'contact_phone', 'phone',
+      'utm_source', 'utm_campaign', 'utm_medium', 'utm_term', 'utm_content',
+      'landing_page', 'page_url', 'url'
+    ]);
+    if (allowedDirect.has(k)) {
+      out[k] = v;
       continue;
     }
 
-    // גם אם השם כבר מדויק ("email", "full_name" וכו')
-    if (allowed.has(k)) {
-      normalized[k] = v;
+    // זיהוי “קישור_לעמוד”/“עמוד”/“link/url/page” כדי לשמור כ-landing_page
+    const low = k.toLowerCase();
+    const isHebPage = k.includes('קישור') || k.includes('עמוד');
+    if (isHebPage || low.includes('page') || low.includes('url') || low.includes('link')) {
+      if (v.startsWith('http')) out['landing_page'] = v;
     }
   }
 
-  // מרכיבים מהצורה fields[i][id/value]
   for (const it of Object.values(byIndex)) {
     if (it.id && typeof it.value === 'string') {
-      normalized[it.id] = it.value;
+      out[it.id] = it.value;
     }
   }
 
-  return normalized;
+  // תמיכה ב-keyword → utm_term
+  if (!out['utm_term'] && typeof raw['keyword'] === 'string') {
+    out['utm_term'] = raw['keyword'];
+  }
+
+  return out;
 }
 
-function hasAnyValue(obj: CleanLead): boolean {
-  return Object.values(obj).some((v) => typeof v === 'string' && v.trim() !== '');
+function hasAnyValue(c: CleanLead): boolean {
+  return Object.values(c).some((v) => typeof v === 'string' && v.trim() !== '');
 }
 
-// ---------- Body parser ----------
-async function readBody(req: Request): Promise<Record<string, unknown>> {
+async function readBody(req: Request): Promise<Raw> {
   const ct = req.headers.get('content-type') || '';
   if (ct.includes('application/json')) {
     const j = await req.json();
-    return isRecord(j) ? j : {};
+    return isRec(j) ? j : {};
   }
   if (ct.includes('application/x-www-form-urlencoded')) {
-    const text = await req.text();
-    return urlEncodedToObject(text);
+    const txt = await req.text();
+    return urlEncToObj(txt);
   }
   if (ct.includes('multipart/form-data')) {
     const fd = await req.formData();
-    return formDataToObject(fd);
+    return formDataToObj(fd);
   }
   return {};
 }
 
-// ---------- Handlers ----------
 export async function POST(req: Request) {
   try {
     const raw = await readBody(req);
-    const norm = normalizeElementorKeys(isRecord(raw) ? raw : {});
+    const norm = normalizeElementor(isRec(raw) ? raw : {});
 
     if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
-      return new NextResponse(
-        JSON.stringify({
-          ok: false,
-          error: 'Missing Supabase env vars',
-          haveUrl: Boolean(process.env.SUPABASE_URL),
-          haveKey: Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY),
-        }),
-        { status: 500, headers: corsHeaders }
-      );
+      return new NextResponse(JSON.stringify({ ok: false, error: 'Missing Supabase env vars' }), {
+        status: 500, headers: cors
+      });
     }
 
-    // נכניס לטבלה **עם הקידומת utm_** כמו בסכמה שלך
+    const landing = pickStr(norm, 'landing_page') ?? pickStr(norm, 'page_url') ?? pickStr(norm, 'url');
+    const utmFallback = utmFromUrl(landing);
+
     const clean: CleanLead = {
       status: 'new',
-      full_name: pickStr(norm, 'full_name') ?? pickStr(norm, 'name'),
+      full_name: pickStr(norm, 'full_name') ?? pickStr(norm, 'name'), // name אמיתי בלבד (כי form_name נחתך)
       phone:     pickStr(norm, 'contact_phone') ?? pickStr(norm, 'phone'),
       email:     pickStr(norm, 'email'),
-      utm_source:   pickStr(norm, 'utm_source'),
-      utm_campaign: pickStr(norm, 'utm_campaign'),
-      utm_medium:   pickStr(norm, 'utm_medium'),
-      utm_term:     pickStr(norm, 'utm_term'),
-      utm_content:  pickStr(norm, 'utm_content'),
+      utm_source:   pickStr(norm, 'utm_source')   ?? (utmFallback.utm_source   ?? null),
+      utm_campaign: pickStr(norm, 'utm_campaign') ?? (utmFallback.utm_campaign ?? null),
+      utm_medium:   pickStr(norm, 'utm_medium')   ?? (utmFallback.utm_medium   ?? null),
+      utm_term:     pickStr(norm, 'utm_term')     ?? (utmFallback.utm_term     ?? null),
+      utm_content:  pickStr(norm, 'utm_content')  ?? (utmFallback.utm_content  ?? null),
+      landing_page: landing ?? null,
     };
 
     if (!hasAnyValue(clean)) {
       return new NextResponse(
-        JSON.stringify({ ok: false, error: 'Empty payload after parsing', receivedKeys: Object.keys(norm) }),
-        { status: 400, headers: corsHeaders }
+        JSON.stringify({ ok: false, error: 'Empty payload after parsing', received: Object.keys(norm) }),
+        { status: 400, headers: cors }
       );
     }
 
-    const supabase = createClient(
-      process.env.SUPABASE_URL,
-      process.env.SUPABASE_SERVICE_ROLE_KEY
-    );
+    const sb = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
+    const { error } = await sb.from('leads').insert(clean);
 
-    const { error } = await supabase.from('leads').insert(clean);
     if (error) {
-      return new NextResponse(
-        JSON.stringify({ ok: false, supabase_error: errToJson(error), clean }),
-        { status: 500, headers: corsHeaders }
-      );
+      return new NextResponse(JSON.stringify({ ok: false, supabase_error: errJson(error), clean }), {
+        status: 500, headers: cors
+      });
     }
 
-    return new NextResponse(JSON.stringify({ ok: true, inserted: clean }), {
-      status: 200,
-      headers: corsHeaders,
-    });
-  } catch (err) {
-    return new NextResponse(JSON.stringify({ ok: false, error: errToJson(err) }), {
-      status: 500,
-      headers: corsHeaders,
-    });
+    return new NextResponse(JSON.stringify({ ok: true, inserted: clean }), { status: 200, headers: cors });
+  } catch (e) {
+    return new NextResponse(JSON.stringify({ ok: false, error: errJson(e) }), { status: 500, headers: cors });
   }
 }
 
 export function OPTIONS() {
-  return new NextResponse(null, { headers: corsHeaders });
+  return new NextResponse(null, { headers: cors });
 }
