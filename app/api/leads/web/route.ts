@@ -1,168 +1,188 @@
+// app/api/leads/web/route.ts
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 
-type Dict = Record<string, string>;
+type Body = Record<string, string>;
 
-function formDataToDict(fd: FormData): Dict {
-  const out: Dict = {};
-  for (const [k, v] of fd.entries()) out[String(k)] = String(v);
-  return out;
-}
-
-async function readBody(req: Request): Promise<Dict> {
-  const ct = req.headers.get('content-type') ?? '';
-  if (ct.includes('application/json')) {
-    const json = (await req.json()) as unknown;
-    if (json && typeof json === 'object') {
-      const out: Dict = {};
-      for (const [k, v] of Object.entries(json as Record<string, unknown>)) {
-        out[k] = String(v ?? '');
-      }
-      return out;
-    }
+/** ---------- 1) BODY PARSING ---------- **/
+async function readBody(req: Request): Promise<Body> {
+  const contentType = req.headers.get('content-type') || '';
+  // JSON
+  if (contentType.includes('application/json')) {
+    const data = (await req.json()) as Record<string, unknown>;
+    const out: Body = {};
+    for (const [key, val] of Object.entries(data)) out[key] = String(val ?? '');
+    return out;
   }
-  if (ct.includes('application/x-www-form-urlencoded') || ct.includes('multipart/form-data')) {
-    return formDataToDict(await req.formData());
+  // x-www-form-urlencoded
+  if (contentType.includes('application/x-www-form-urlencoded')) {
+    const text = await req.text();
+    const params = new URLSearchParams(text);
+    const out: Body = {};
+    params.forEach((v, k) => (out[k] = v));
+    return out;
   }
-  return {};
-}
-
-// מיפוי מפתחות נפוצים בעברית/שונות
-const heToStd: Record<string, string> = {
-  'שם מלא': 'full_name',
-  'אימייל': 'email',
-  'דואל': 'email',
-  'טלפון': 'contact_phone',
-  'מספר טלפון': 'contact_phone',
-  'הודעה': 'message',
-  'מקור': 'utm_source',
-  'קמפיין': 'utm_campaign',
-  'מדיה': 'utm_medium',
-  'ערוץ': 'utm_medium',
-  'תוכן': 'utm_content',
-  'מילת מפתח': 'utm_term',
-  'קישור לעמוד': 'page_url',
-  'פרטי משתמש': 'user_agent',
-  'ip השולח': 'ip',
-  'מופעל באמצעות': 'powered_by',
-};
-
-function normalizeKey(raw: string): string {
-  let k = raw.trim().replace(/^אין תווית\s+/i, ''); // Elementor לפעמים מוסיף "אין תווית "
-  const lower = k.toLowerCase();
-
-  const direct: Record<string, string> = {
-    'full_name': 'full_name',
-    'email': 'email',
-    'contact_phone': 'contact_phone',
-    'phone': 'contact_phone',
-    'message': 'message',
-    'utm_source': 'utm_source',
-    'utm_campaign': 'utm_campaign',
-    'utm_medium': 'utm_medium',
-    'utm_content': 'utm_content',
-    'utm_term': 'utm_term',
-    'keyword': 'utm_term',
-    'form_id': 'form_id',
-    'form_name': 'form_name',
-    'page_url': 'page_url',
-  };
-  if (direct[lower]) return direct[lower];
-
-  // עברית → סטנדרטי
-  for (const [he, std] of Object.entries(heToStd)) {
-    if (lower === he.toLowerCase()) return std;
+  // multipart/form-data
+  if (contentType.includes('multipart/form-data')) {
+    const fd = await req.formData();
+    const out: Body = {};
+    for (const [k, v] of fd.entries()) out[k] = String(v);
+    return out;
   }
-
-  // ברירת מחדל: לרווחים → קווים תחתונים
-  return k.replace(/\s+/g, '_').toLowerCase();
-}
-
-function normalizeDict(src: Dict): Dict {
-  const out: Dict = {};
-  for (const [k, v] of Object.entries(src)) out[normalizeKey(k)] = String(v);
-  return out;
-}
-
-function cleanPhone(p?: string): string | undefined {
-  if (!p) return undefined;
-  const d = p.replace(/\D+/g, '');
-  return d || undefined;
-}
-
-function parseUTMsFromUrl(url?: string): Partial<Dict> {
-  if (!url) return {};
+  // fallback: try json, else empty
   try {
-    const u = new URL(url);
-    const q = u.searchParams;
-    const o: Partial<Dict> = {};
-    const keys = ['utm_source', 'utm_campaign', 'utm_medium', 'utm_content', 'utm_term',
-                  'gclid', 'wbraid', 'gbraid', 'fbclid', 'ttclid', 'msclkid'];
-    keys.forEach(k => {
-      const val = q.get(k);
-      if (val) (o as Dict)[k] = val;
-    });
-    const kw = q.get('keyword') ?? q.get('q');
-    if (kw && !o.utm_term) (o as Dict).utm_term = kw;
-    return o;
+    const data = (await req.json()) as Record<string, unknown>;
+    const out: Body = {};
+    for (const [key, val] of Object.entries(data)) out[key] = String(val ?? '');
+    return out;
   } catch {
     return {};
   }
 }
 
-export async function POST(req: Request) {
-  try {
-    const raw = await readBody(req);
-    const body = normalizeDict(raw);
+/** ---------- 2) FIELD NORMALIZATION ---------- **/
+const ALIASES: Record<string, string[]> = {
+  // לידים בסיסיים
+  full_name: [
+    'full_name',
+    'שם',
+    'שם מלא',
+    'שם פרטי',
+    'Name',
+    'Your Name',
+    'אין תווית full_name',
+  ],
+  email: ['email', 'אימייל', 'דוא"ל', 'מייל', 'כתובת אימייל', 'אין תווית email'],
+  contact_phone: [
+    'contact_phone',
+    'phone',
+    'טלפון',
+    'מספר טלפון',
+    'טלפון נייד',
+    'אין תווית contact_phone',
+  ],
+  message: ['message', 'הודעה', 'תוכן', 'אין תווית message'],
 
-    // UTM – עדיפות לשדות המפורשים; אם חסר, נקרא מה-URL של העמוד/Referer
-    const utm: Dict = {
-      utm_source: body.utm_source ?? '',
-      utm_campaign: body.utm_campaign ?? '',
-      utm_medium: body.utm_medium ?? '',
-      utm_content: body.utm_content ?? '',
-      utm_term: body.utm_term ?? '',
-    };
+  // UTM + Keyword (כולל שמות העמודה בעברית מהדאשבורד)
+  utm_source: ['utm_source', 'source', '(Source) מקור'],
+  utm_medium: ['utm_medium', 'medium'],
+  utm_campaign: ['utm_campaign', 'campaign', '(Campaign) קמפיין'],
+  utm_content: ['utm_content', 'content'],
+  utm_term: ['utm_term', 'term', 'keyword', '(Keyword) מילת מפתח', 'מילת מפתח'],
+  keyword: ['keyword', '(Keyword) מילת מפתח', 'מילת מפתח'],
 
-    if (!utm.utm_source || !utm.utm_campaign || !utm.utm_medium) {
-      const fallback = parseUTMsFromUrl(body.page_url ?? req.headers.get('referer') ?? undefined);
-      Object.assign(utm, Object.fromEntries(Object.entries(fallback).filter(([, v]) => v)));
-    }
+  // פרטי טופס
+  form_id: ['form_id', 'formid'],
+  form_name: ['form_name', 'formname', 'שם טופס', 'אין תווית form_name'],
+};
 
-    const full_name = body.full_name ?? '';
-    const email = body.email ?? '';
-    const phone = cleanPhone(body.contact_phone);
-
-    const supabase = createClient(
-      process.env.SUPABASE_URL as string,
-      process.env.SUPABASE_SERVICE_ROLE_KEY as string
-    );
-
-    const insert = {
-      status: 'new',
-      full_name,
-      email,
-      phone,
-      utm_source: utm.utm_source || null,
-      utm_campaign: utm.utm_campaign || null,
-      utm_medium: utm.utm_medium || null,
-      utm_content: utm.utm_content || null,
-      utm_term: utm.utm_term || null,
-    };
-
-    await supabase.from('leads').insert(insert);
-
-    return NextResponse.json({ ok: true });
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : 'Unknown error';
-    return NextResponse.json({ ok: false, error: msg }, { status: 500 });
+function pick(body: Body, canonical: string): string | undefined {
+  const candidates = [
+    ...(ALIASES[canonical] || [canonical]),
+    // אלמנטור לפעמים שולח "אין תווית {id}"
+    `אין תווית ${canonical}`,
+  ];
+  for (const key of candidates) {
+    const val = body[key];
+    if (val && String(val).trim() !== '') return String(val).trim();
   }
+  return undefined;
+}
+
+/** ---------- 3) HANDLERS ---------- **/
+export async function POST(req: Request) {
+  const raw = await readBody(req);
+
+  // לוג עוזר (כמו שהשתמשנו בו עד עכשיו)
+  try {
+    console.info('[LEAD] keys:', Object.keys(raw));
+    const sample: Record<string, string> = {};
+    for (const k of [
+      'full_name',
+      'email',
+      'contact_phone',
+      'message',
+      'utm_source',
+      'utm_campaign',
+      'utm_medium',
+      'utm_content',
+      'utm_term',
+      'keyword',
+      'form_id',
+      'form_name',
+    ]) {
+      const v = raw[k] ?? raw[`אין תווית ${k}`];
+      if (typeof v === 'string') sample[k] = v;
+    }
+    console.info('[LEAD] sample values:', sample);
+  } catch {}
+
+  // יצירת אובייקט מסודר לשמירה
+  const lead = {
+    status: 'new' as const,
+    full_name: pick(raw, 'full_name'),
+    email: pick(raw, 'email'),
+    // בעמודה בטבלה זה phone, לכן נמפה בהתאם
+    phone: pick(raw, 'contact_phone'),
+    message: pick(raw, 'message'),
+    utm_source: pick(raw, 'utm_source'),
+    utm_medium: pick(raw, 'utm_medium'),
+    utm_campaign: pick(raw, 'utm_campaign'),
+    utm_content: pick(raw, 'utm_content'),
+    // ממפים גם ל-keyword אם מגיע רק אחד מהם
+    utm_term: pick(raw, 'utm_term') ?? pick(raw, 'keyword'),
+    keyword: pick(raw, 'keyword') ?? pick(raw, 'utm_term'),
+    form_id: pick(raw, 'form_id'),
+    form_name: pick(raw, 'form_name'),
+  };
+
+  // מסננים undefined/ריקים
+  const toInsert: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(lead)) {
+    if (v !== undefined && v !== '') toInsert[k] = v;
+  }
+
+  // Supabase
+  const supabaseUrl =
+    process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+  if (!supabaseUrl || !serviceKey) {
+    console.error('Missing Supabase env vars');
+    return NextResponse.json(
+      { ok: false, error: 'Server not configured' },
+      { status: 500 }
+    );
+  }
+
+  const supabase = createClient(supabaseUrl, serviceKey, {
+    auth: { persistSession: false },
+  });
+
+  const { data, error } = await supabase
+    .from('leads')
+    .insert(toInsert)
+    .select('id')
+    .single();
+
+  if (error) {
+    console.error('Supabase insert error:', error);
+    return NextResponse.json(
+      { ok: false, supabase_error: error },
+      { status: 500 }
+    );
+  }
+
+  return NextResponse.json({ ok: true, id: data.id }, { status: 200 });
 }
 
 export async function OPTIONS() {
-  const headers = new Headers();
-  headers.set('Access-Control-Allow-Origin', '*');
-  headers.set('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  headers.set('Access-Control-Allow-Headers', 'Content-Type');
-  return new Response(null, { headers });
+  return new Response(null, {
+    headers: {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type',
+      'Access-Control-Max-Age': '86400',
+    },
+  });
 }
