@@ -71,7 +71,7 @@ function errJson(e: unknown): PgErr {
   return { message: String(e), details: null, hint: null, code: null };
 }
 
-// ---- UTM from URL (כולל keyword / q / k) ----
+// ----- UTM מתוך ה־URL (כולל keyword / q / k) -----
 function utmFromUrl(urlStr: string | null): Partial<CleanLead> {
   if (!urlStr) return {};
   try {
@@ -94,7 +94,7 @@ function utmFromUrl(urlStr: string | null): Partial<CleanLead> {
   }
 }
 
-// ---- נורמליזציה לפורמטים של אלמנטור + עברית ----
+// ----- נירמול ספציפי לאלמנטור + עברית -----
 function normalizeElementor(raw: Raw): Raw {
   const out: Raw = {};
   const byIndex: Record<string, { id?: string; value?: string }> = {};
@@ -120,21 +120,22 @@ function normalizeElementor(raw: Raw): Raw {
       continue;
     }
 
-    // נשמור את כל המפתחות – נבחר אחר־כך לפי היוריסטיקות
+    // נשמור כל מפתח כמו שהוא – נבחר לפי חוקים בהמשך
     out[k] = v;
   }
 
+  // חבר id->value מהאינדקסים
   for (const it of Object.values(byIndex)) {
     if (it.id && typeof it.value === 'string') out[it.id] = it.value;
   }
 
-  // keyword → utm_term אם חסר
+  // keyword -> utm_term אם חסר
   if (!out['utm_term'] && typeof raw['keyword'] === 'string') out['utm_term'] = raw['keyword'];
 
   return out;
 }
 
-// חיפוש לפי רמזים בשם שדה (כולל עברית)
+// ----- חיפוש לפי רמזים בשם שדה (כולל עברית) -----
 function findByHints(obj: Raw, hints: string[]): string | null {
   for (const [k, v] of Object.entries(obj)) {
     if (typeof v !== 'string' || !v.trim()) continue;
@@ -146,12 +147,50 @@ function findByHints(obj: Raw, hints: string[]): string | null {
   return null;
 }
 
+// ----- מציאת ערכים לפי תבנית (Fallbacks חכמים) -----
+function firstEmailLike(obj: Raw): string | null {
+  const re = /^[^\s@]+@[^\s@]+\.[^\s@]+$/i;
+  for (const v of Object.values(obj)) {
+    if (typeof v === 'string' && re.test(v.trim())) return v.trim();
+  }
+  return null;
+}
+
+function firstPhoneLike(obj: Raw): string | null {
+  for (const v of Object.values(obj)) {
+    if (typeof v !== 'string') continue;
+    const digits = v.replace(/\D+/g, '');
+    if (digits.length >= 8 && digits.length <= 15) return v.trim();
+  }
+  return null;
+}
+
+function firstNameLike(obj: Raw): string | null {
+  const banKeys = ['message', 'notes', 'utm', 'source', 'campaign', 'medium', 'term', 'content', 'page', 'url', 'form', 'id', 'user', 'agent'];
+  const emailRe = /@/;
+  for (const [k, v] of Object.entries(obj)) {
+    if (typeof v !== 'string') continue;
+    const val = v.trim();
+    if (!val) continue;
+    const low = k.toLowerCase();
+
+    if (banKeys.some((b) => low.includes(b))) continue; // אל תיקח תיאור/הודעה/utm/וכו׳
+    if (emailRe.test(val)) continue;                   // אל תיקח אימייל
+    const digits = val.replace(/\D+/g, '');
+    if (digits.length >= 8) continue;                  // אל תיקח טלפון
+
+    // יש אותיות/רווחים – נראה כמו שם
+    if (/[^\d]/.test(val) && val.length >= 2) return val;
+  }
+  return null;
+}
+
 function hasAnyValue(c: CleanLead): boolean {
   return Object.values(c).some((v) => typeof v === 'string' && v.trim() !== '');
 }
 
 async function readBody(req: Request): Promise<Raw> {
-  const ct = req.headers.get('content-type') || '';
+  const ct = (req.headers.get('content-type') || '').toLowerCase();
   if (ct.includes('application/json')) {
     const j = await req.json();
     return isRec(j) ? j : {};
@@ -172,6 +211,16 @@ export async function POST(req: Request) {
     const raw = await readBody(req);
     const all = normalizeElementor(isRec(raw) ? raw : {});
 
+    // דיבאג ברור בלוגים
+    try {
+      console.log('[LEAD] keys:', Object.keys(all));
+      const sample: Record<string, string> = {};
+      for (const [k, v] of Object.entries(all)) {
+        if (typeof v === 'string') sample[k] = v.slice(0, 120);
+      }
+      console.log('[LEAD] sample values:', sample);
+    } catch { /* ignore */ }
+
     if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
       return new NextResponse(
         JSON.stringify({ ok: false, error: 'Missing Supabase env vars' }),
@@ -189,27 +238,31 @@ export async function POST(req: Request) {
 
     const utmFallback = utmFromUrl(landing ?? null);
 
-    // מיפוי חכם לשם/טלפון/אימייל
-    const full_name =
+    // 1) ניסיון לפי מזהי שדות קלאסיים/עברית
+    let full_name =
       pickStr(all, 'full_name') ??
       pickStr(all, 'name') ??
       findByHints(all, ['name', 'full_name', 'שם', 'שם_מלא']);
 
-    const email =
+    let email =
       pickStr(all, 'email') ??
       findByHints(all, ['email', 'mail', 'e-mail', 'אימייל', 'דוא', 'דואל']);
 
-    const phone =
+    let phone =
       pickStr(all, 'contact_phone') ??
       pickStr(all, 'phone') ??
-      findByHints(all, ['phone', 'tel', 'mobile', 'cell']) ??
-      findByHints(all, ['טלפון', 'טל', 'נייד', 'סלול']);
+      findByHints(all, ['phone', 'tel', 'mobile', 'cell', 'טלפון', 'טל', 'נייד', 'סלול']);
+
+    // 2) אם עדיין חסר – חפש לפי תבניות (דפוס ערך)
+    if (!email) email = firstEmailLike(all);
+    if (!phone) phone = firstPhoneLike(all);
+    if (!full_name) full_name = firstNameLike(all);
 
     const clean: CleanLead = {
       status: 'new',
-      full_name,
-      phone,
-      email,
+      full_name: full_name ?? null,
+      phone: phone ?? null,
+      email: email ?? null,
       utm_source: pickStr(all, 'utm_source') ?? (utmFallback.utm_source ?? null),
       utm_campaign: pickStr(all, 'utm_campaign') ?? (utmFallback.utm_campaign ?? null),
       utm_medium: pickStr(all, 'utm_medium') ?? (utmFallback.utm_medium ?? null),
