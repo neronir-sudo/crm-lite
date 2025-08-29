@@ -1,52 +1,69 @@
+// public/utm-capture.js
 (function () {
-  // קריאה פרמטר מה-URL
-  function get(name) {
-    const url = new URL(window.location.href);
-    return url.searchParams.get(name) || '';
+  // --- parse current URL once
+  var urlUTM = {};
+  try {
+    var u = new URL(window.location.href);
+    var q = u.searchParams;
+    var keys = [
+      'utm_source','utm_medium','utm_campaign','utm_content','utm_term',
+      'gclid','wbraid','gbraid','fbclid','ttclid','msclkid','keyword'
+    ];
+    keys.forEach(function(k){ var v = q.get(k); if (v) urlUTM[k] = v; });
+    if (!urlUTM.utm_term && q.get('q')) urlUTM.utm_term = q.get('q');
+  } catch(e) {}
+
+  // also persist to sessionStorage (so it survives internal nav)
+  try {
+    var stored = JSON.parse(sessionStorage.getItem('crm_lite_utm') || '{}');
+    Object.assign(stored, urlUTM);
+    sessionStorage.setItem('crm_lite_utm', JSON.stringify(stored));
+    urlUTM = stored;
+  } catch(e){}
+
+  // --- set value into any of these selectors
+  function setField(field, value) {
+    if (!value) return;
+
+    // name="utm_source"
+    var sel1 = 'input[name="' + field + '"]';
+    // name="form_fields[utm_source]" (Elementor)
+    var sel2 = 'input[name="form_fields[' + field + ']"]';
+    // id="form-field-utm_source" (Elementor default)
+    var sel3 = '#form-field-' + field;
+
+    [sel1, sel2, sel3].forEach(function(sel){
+      var el = document.querySelector(sel);
+      if (el && !el.value) el.value = value;
+    });
   }
 
-  // שמירה/קריאה מ-sessionStorage כדי לשרוד ניווטים
-  const storeKeys = ['utm_source','utm_campaign','utm_medium','utm_content','utm_term','keyword'];
-  function loadStored() {
-    const o = {};
-    storeKeys.forEach(k => { o[k] = sessionStorage.getItem(k) || ''; });
-    return o;
-  }
-  function saveStored(o) {
-    storeKeys.forEach(k => { if (o[k]) sessionStorage.setItem(k, o[k]); });
-  }
+  function applyAll() {
+    Object.keys(urlUTM).forEach(function(k){
+      var v = urlUTM[k];
+      if (!v) return;
+      if (k === 'keyword' && !urlUTM.utm_term) setField('utm_term', v);
+      setField(k, v); // utm_*, gclid, fbclid, ...
+    });
 
-  // עדכון ערכים: קודם מה-URL, אם חסר – מה-Session
-  const fromUrl = {
-    utm_source: get('utm_source'),
-    utm_campaign: get('utm_campaign'),
-    utm_medium: get('utm_medium'),
-    utm_content: get('utm_content'),
-    utm_term: get('utm_term') || get('keyword') || get('q')
-  };
-  const stored = loadStored();
-  const utm = Object.assign({}, stored, Object.fromEntries(Object.entries(fromUrl).filter(([,v]) => v)));
-
-  saveStored(utm);
-
-  // מילוי שדות אלמנטור לפי ה-ID של השדה
-  function fill(id, val) {
-    if (!val) return;
-    const el = document.querySelector('[id="'+id+'"]');
-    if (el && 'value' in el) { el.value = val; }
+    // set page_url if exists
+    var pageUrl = window.location.href;
+    ['page_url'].forEach(function(field){
+      setField(field, pageUrl);
+    });
   }
 
-  function fillAll() {
-    fill('utm_source',  utm.utm_source);
-    fill('utm_campaign',utm.utm_campaign);
-    fill('utm_medium',  utm.utm_medium);
-    fill('utm_content', utm.utm_content);
-    fill('utm_term',    utm.utm_term);
-    // אם יש לכם שדה Keyword נפרד – זה ימלא אותו
-    fill('keyword',     utm.utm_term);
+  // run asap
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', applyAll);
+  } else {
+    applyAll();
   }
 
-  // ברגע שה־DOM מוכן – נמלא. אם אלמנטור טוען מאוחר יותר, ננסה שוב.
-  document.addEventListener('DOMContentLoaded', fillAll);
-  window.addEventListener('elementor/popup/show', fillAll); // אם משתמשים בפופאפ
+  // in case Elementor re-renders the form later
+  document.addEventListener('elementor/popup/show', applyAll);
+  document.addEventListener('elementor/render/form_view', applyAll);
+  // small retry after 1s to catch late loads
+  setTimeout(applyAll, 1000);
 })();
+
