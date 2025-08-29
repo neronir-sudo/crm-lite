@@ -40,54 +40,51 @@ async function readBody(req: Request): Promise<Body> {
   }
 }
 
-/** ---------- 2) FIELD NORMALIZATION ---------- **/
+/** ---------- 2) FIELD NORMALIZATION (supports Elementor form_fields[...]) ---------- **/
 const ALIASES: Record<string, string[]> = {
-  // לידים בסיסיים
+  // בסיס
   full_name: [
-    'full_name',
-    'שם',
-    'שם מלא',
-    'שם פרטי',
-    'Name',
-    'Your Name',
-    'אין תווית full_name',
+    'full_name', 'form_fields[full_name]',
+    'שם','שם מלא','שם פרטי','Name','Your Name','אין תווית full_name',
   ],
-  email: ['email', 'אימייל', 'דוא"ל', 'מייל', 'כתובת אימייל', 'אין תווית email'],
+  email: [
+    'email','form_fields[email]',
+    'אימייל','דוא"ל','מייל','כתובת אימייל','אין תווית email',
+  ],
   contact_phone: [
-    'contact_phone',
-    'phone',
-    'טלפון',
-    'מספר טלפון',
-    'טלפון נייד',
-    'אין תווית contact_phone',
+    'contact_phone','form_fields[contact_phone]',
+    'phone','form_fields[phone]',
+    'טלפון','מספר טלפון','טלפון נייד','אין תווית contact_phone',
   ],
-  message: ['message', 'הודעה', 'תוכן', 'אין תווית message'],
+  message: [
+    'message','form_fields[message]',
+    'הודעה','תוכן','אין תווית message',
+  ],
 
-  // UTM + Keyword (כולל שמות העמודה בעברית מהדאשבורד)
-  utm_source: ['utm_source', 'source', '(Source) מקור'],
-  utm_medium: ['utm_medium', 'medium'],
-  utm_campaign: ['utm_campaign', 'campaign', '(Campaign) קמפיין'],
-  utm_content: ['utm_content', 'content'],
-  utm_term: ['utm_term', 'term', 'keyword', '(Keyword) מילת מפתח', 'מילת מפתח'],
-  keyword: ['keyword', '(Keyword) מילת מפתח', 'מילת מפתח'],
+  // UTM + Keyword
+  utm_source:   ['utm_source','form_fields[utm_source]','source','(Source) מקור'],
+  utm_medium:   ['utm_medium','form_fields[utm_medium]','medium'],
+  utm_campaign: ['utm_campaign','form_fields[utm_campaign]','campaign','(Campaign) קמפיין'],
+  utm_content:  ['utm_content','form_fields[utm_content]','content'],
+  utm_term:     ['utm_term','form_fields[utm_term]','term','keyword','(Keyword) מילת מפתח','מילת מפתח'],
+  keyword:      ['keyword','form_fields[keyword]','(Keyword) מילת מפתח','מילת מפתח'],
 
-  // פרטי טופס / עמוד
-  form_id: ['form_id', 'formid'],
-  form_name: ['form_name', 'formname', 'שם טופס', 'אין תווית form_name'],
-  page_url: ['page_url', 'url', 'page-url', 'Page URL', 'כתובת עמוד'],
+  // פרטי טופס/עמוד
+  form_id:   ['form_id','form_fields[form_id]','formid'],
+  form_name: ['form_name','form_fields[form_name]','formname','שם טופס','אין תווית form_name'],
+  page_url:  ['page_url','form_fields[page_url]','url','page-url','Page URL','כתובת עמוד'],
 
-  // מזהי אטריביושן נוספים
-  gclid: ['gclid'],
-  wbraid: ['wbraid'],
-  gbraid: ['gbraid'],
-  fbclid: ['fbclid'],
+  // מזהי אטריביושן
+  gclid:  ['gclid','form_fields[gclid]'],
+  wbraid: ['wbraid','form_fields[wbraid]'],
+  gbraid: ['gbraid','form_fields[gbraid]'],
+  fbclid: ['fbclid','form_fields[fbclid]'],
 };
 
 function pick(body: Body, canonical: string): string | undefined {
   const candidates = [
     ...(ALIASES[canonical] || [canonical]),
-    // אלמנטור לפעמים שולח "אין תווית {id}"
-    `אין תווית ${canonical}`,
+    `אין תווית ${canonical}`, // Elementor "no label" quirk
   ];
   for (const key of candidates) {
     const val = body[key];
@@ -104,17 +101,8 @@ function parseUTMsFromUrl(url?: string | null): Partial<Record<string, string>> 
     const q = u.searchParams;
     const out: Record<string, string> = {};
     const keys = [
-      'utm_source',
-      'utm_campaign',
-      'utm_medium',
-      'utm_content',
-      'utm_term',
-      'gclid',
-      'wbraid',
-      'gbraid',
-      'fbclid',
-      'ttclid',
-      'msclkid',
+      'utm_source','utm_campaign','utm_medium','utm_content','utm_term',
+      'gclid','wbraid','gbraid','fbclid','ttclid','msclkid',
     ];
     keys.forEach((k) => {
       const v = q.get(k);
@@ -132,39 +120,24 @@ function parseUTMsFromUrl(url?: string | null): Partial<Record<string, string>> 
 export async function POST(req: Request) {
   const raw = await readBody(req);
 
-  // לוג עוזר (כמו שהשתמשנו בו עד עכשיו)
+  // לוג דיבוג
   try {
     console.info('[LEAD] keys:', Object.keys(raw));
     const sample: Record<string, string> = {};
     for (const k of [
-      'full_name',
-      'email',
-      'contact_phone',
-      'message',
-      'utm_source',
-      'utm_campaign',
-      'utm_medium',
-      'utm_content',
-      'utm_term',
-      'keyword',
-      'form_id',
-      'form_name',
-      'page_url',
-      'gclid',
-      'wbraid',
-      'gbraid',
-      'fbclid',
+      'full_name','email','contact_phone','message',
+      'utm_source','utm_campaign','utm_medium','utm_content','utm_term','keyword',
+      'form_id','form_name','page_url','gclid','wbraid','gbraid','fbclid',
     ]) {
-      const v = raw[k] ?? raw[`אין תווית ${k}`];
+      const v = raw[k] ?? raw[`אין תווית ${k}`] ?? raw[`form_fields[${k}]`];
       if (typeof v === 'string') sample[k] = v;
     }
     console.info('[LEAD] sample values:', sample);
   } catch {}
 
-  // נתעלם בשקט מפרמטרים כמו ?token=... (שימושי לשלב האבטחה בהמשך)
   const referer = req.headers.get('referer') ?? undefined;
 
-  // UTM מהגוף (כולל keyword) + fallback מה-URL/Referer אם חסר
+  // UTM מהגוף + Fallback מ־page_url/Referer
   const utm_body = {
     utm_source: pick(raw, 'utm_source'),
     utm_medium: pick(raw, 'utm_medium'),
@@ -172,90 +145,66 @@ export async function POST(req: Request) {
     utm_content: pick(raw, 'utm_content'),
     utm_term: pick(raw, 'utm_term') ?? pick(raw, 'keyword'),
   };
+
   if (!utm_body.utm_source || !utm_body.utm_campaign || !utm_body.utm_medium) {
     const pageUrl = pick(raw, 'page_url');
     const fb = parseUTMsFromUrl(pageUrl ?? referer);
-    // תמיכה גם ב־gclid/wbraid/gbraid/fbclid דרך ה-fallback
-    utm_body.utm_source ||= fb.utm_source;
-    utm_body.utm_campaign ||= fb.utm_campaign;
-    utm_body.utm_medium ||= fb.utm_medium;
+    utm_body.utm_source  ||= fb.utm_source;
+    utm_body.utm_campaign||= fb.utm_campaign;
+    utm_body.utm_medium  ||= fb.utm_medium;
     utm_body.utm_content ||= fb.utm_content;
-    utm_body.utm_term ||= fb.utm_term;
-    // נמזג את מזהי האטריביושן לתוך raw כדי שלא נאבד אותם
+    utm_body.utm_term    ||= fb.utm_term;
     if (fb.gclid && !raw.gclid) raw.gclid = fb.gclid;
     if (fb.wbraid && !raw.wbraid) raw.wbraid = fb.wbraid;
     if (fb.gbraid && !raw.gbraid) raw.gbraid = fb.gbraid;
     if (fb.fbclid && !raw.fbclid) raw.fbclid = fb.fbclid;
   }
 
-  // יצירת אובייקט מסודר לשמירה
   const lead = {
     status: 'new' as const,
     full_name: pick(raw, 'full_name'),
     email: pick(raw, 'email'),
-    // בעמודה בטבלה זה phone, לכן נמפה בהתאם
     phone: pick(raw, 'contact_phone'),
     message: pick(raw, 'message'),
-    // UTM
+
     utm_source: utm_body.utm_source,
     utm_medium: utm_body.utm_medium,
     utm_campaign: utm_body.utm_campaign,
     utm_content: utm_body.utm_content,
     utm_term: utm_body.utm_term,
-    // גם נשאיר עמודת keyword למי שמשתמש בה בדשבורד
     keyword: pick(raw, 'keyword') ?? utm_body.utm_term ?? undefined,
-    // פרטי טופס
+
     form_id: pick(raw, 'form_id'),
     form_name: pick(raw, 'form_name'),
-    // מזהי אטריביושן
-    gclid: pick(raw, 'gclid'),
+
+    gclid:  pick(raw, 'gclid'),
     wbraid: pick(raw, 'wbraid'),
     gbraid: pick(raw, 'gbraid'),
     fbclid: pick(raw, 'fbclid'),
   };
 
-  // מסננים undefined/ריקים
   const toInsert: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(lead)) {
-    if (v !== undefined && v !== '') toInsert[k] = v;
-  }
+  for (const [k, v] of Object.entries(lead)) if (v !== undefined && v !== '') toInsert[k] = v;
 
-  // Supabase
-  const supabaseUrl =
-    process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-
+  const supabaseUrl = process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const serviceKey  = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!supabaseUrl || !serviceKey) {
     console.error('Missing Supabase env vars');
-    return withCORS(
-      NextResponse.json(
-        { ok: false, error: 'Server not configured' },
-        { status: 500 }
-      )
-    );
+    return withCORS(NextResponse.json({ ok: false, error: 'Server not configured' }, { status: 500 }));
   }
 
-  const supabase = createClient(supabaseUrl, serviceKey, {
-    auth: { persistSession: false },
-  });
-
-  const { data, error } = await supabase
-    .from('leads')
-    .insert(toInsert)
-    .select('id')
-    .single();
+  const supabase = createClient(supabaseUrl, serviceKey, { auth: { persistSession: false } });
+  const { data, error } = await supabase.from('leads').insert(toInsert).select('id').single();
 
   if (error) {
     console.error('Supabase insert error:', error);
-    return withCORS(
-      NextResponse.json({ ok: false, supabase_error: error }, { status: 500 })
-    );
+    return withCORS(NextResponse.json({ ok: false, supabase_error: error }, { status: 500 }));
   }
 
   return withCORS(NextResponse.json({ ok: true, id: data.id }, { status: 200 }));
 }
 
-/** ---------- 4) CORS (OPTIONS + תשובות בפועל) ---------- **/
+/** ---------- 4) CORS ---------- **/
 function withCORS(res: NextResponse) {
   res.headers.set('Access-Control-Allow-Origin', '*');
   res.headers.set('Access-Control-Allow-Methods', 'POST, OPTIONS');
