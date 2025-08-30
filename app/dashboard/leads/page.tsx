@@ -1,6 +1,9 @@
 // app/dashboard/leads/page.tsx
 import { createClient } from '@supabase/supabase-js';
 
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
+
 type Row = {
   created_at: string;
   full_name: string | null;
