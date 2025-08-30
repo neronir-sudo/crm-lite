@@ -27,24 +27,22 @@ function deepFlatten(obj: any, prefix = '', out: Body = {}): Body {
 }
 
 /* ---------- 1) BODY PARSING ---------- */
-async function readBody(req: Request): Promise(Body) {
+async function readBody(req: Request): Promise<Body> {
   const contentType = (req.headers.get('content-type') || '').toLowerCase();
 
-  // JSON (אלמנטור שולח לפעמים JSON עם form_fields וכד')
+  // JSON (אלמנטור שולח לעיתים JSON עם form_fields)
   if (contentType.includes('application/json')) {
     const raw = (await req.json()) as AnyObj;
 
-    // נבנה מילון שטוח משולב:
-    // 1) flatten מלא עם סוגריים [] כדי לתפוס 'form_fields[utm_source]'
-    // 2) במקביל נוציא גם מפתחות שטוחים מתוך form_fields/fields/meta/data
+    // flatten עם סוגריים [] + הוספת מפתחות שטוחים אם קיימים form_fields/fields/meta/data
     const flat = deepFlatten(raw);
 
     const mergeFrom = (branch?: AnyObj) => {
       if (!branch || typeof branch !== 'object') return;
       for (const [k, v] of Object.entries(branch)) {
         if (v == null) continue;
-        flat[k] = String(v); // מפתח שטוח (utm_source)
-        flat[`form_fields[${k}]`] ??= String(v); // גם בסגנון form_fields[...]
+        flat[k] = String(v); // utm_source
+        flat[`form_fields[${k}]`] ??= String(v); // form_fields[utm_source]
       }
     };
 
@@ -56,7 +54,7 @@ async function readBody(req: Request): Promise(Body) {
     return flat;
   }
 
-  // x-www-form-urlencoded (הפורמט הקלאסי של וובהוק אלמנטור)
+  // x-www-form-urlencoded
   if (contentType.includes('application/x-www-form-urlencoded')) {
     const text = await req.text();
     const params = new URLSearchParams(text);
@@ -73,7 +71,7 @@ async function readBody(req: Request): Promise(Body) {
     return out;
   }
 
-  // fallback: ננסה JSON ואז כלום
+  // fallback: ניסיון JSON
   try {
     const raw = (await req.json()) as AnyObj;
     return deepFlatten(raw);
@@ -82,7 +80,7 @@ async function readBody(req: Request): Promise(Body) {
   }
 }
 
-/* ---------- 2) ALIASES (תומך גם ב-form_fields[...]) ---------- */
+/* ---------- 2) ALIASES ---------- */
 const ALIASES: Record<string, string[]> = {
   full_name: [
     'full_name', 'form_fields[full_name]',
@@ -151,7 +149,6 @@ function parseUTMsFromUrl(url?: string | null): Partial<Record<string, string>> 
 export async function POST(req: Request) {
   const raw = await readBody(req);
 
-  // דיבוג שימושי (תראה ב־Vercel Logs)
   try {
     console.info('[LEAD] keys:', Object.keys(raw));
     const sample: Record<string, string> = {};
@@ -222,7 +219,7 @@ export async function POST(req: Request) {
   if (!supabaseUrl || !serviceKey) {
     console.error('Missing Supabase env vars');
     return withCORS(NextResponse.json({ ok: false, error: 'Server not configured' }, { status: 500 }));
-  }
+    }
 
   const supabase = createClient(supabaseUrl, serviceKey, { auth: { persistSession: false } });
   const { data, error } = await supabase.from('leads').insert(toInsert).select('id').single();
