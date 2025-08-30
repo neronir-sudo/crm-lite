@@ -1,112 +1,87 @@
 // public/utm-capture.js
 (function () {
-  "use strict";
+  var UTM_KEYS = [
+    'utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term',
+    'gclid', 'wbraid', 'gbraid', 'fbclid'
+  ];
 
-  /** Persist for 90 days */
-  var STORE_KEY = "crm_lite_utms_v1";
-  var TTL_MS = 90 * 24 * 60 * 60 * 1000;
-
-  function now() {
-    return Date.now();
-  }
-
-  function readStored() {
+  function getParamsFromUrl() {
+    var out = {};
     try {
-      var raw = window.localStorage.getItem(STORE_KEY);
-      if (!raw) return null;
-      var obj = JSON.parse(raw);
-      if (!obj || typeof obj !== "object") return null;
-      if (typeof obj.ts !== "number" || now() - obj.ts > TTL_MS) return null;
-      return obj.val || null;
-    } catch {
-      return null;
-    }
+      var p = new URLSearchParams(window.location.search);
+      UTM_KEYS.forEach(function (k) {
+        var v = p.get(k);
+        if (v) out[k] = v;
+      });
+    } catch (_) {}
+    return out;
   }
 
-  function writeStored(utms) {
+  function loadFromStorage() {
+    var out = {};
     try {
-      window.localStorage.setItem(
-        STORE_KEY,
-        JSON.stringify({ ts: now(), val: utms })
-      );
-    } catch {
-      /* noop */
-    }
+      var raw = sessionStorage.getItem('__crm_lite_utm__');
+      if (raw) out = JSON.parse(raw) || {};
+    } catch (_) {}
+    return out;
   }
 
-  function get(qs, key) {
-    var v = qs.get(key);
-    return v && v.trim() !== "" ? v : undefined;
-  }
-
-  function collectFromLocation() {
+  function saveToStorage(obj) {
     try {
-      var qs = new URLSearchParams(window.location.search || "");
-      var out = {
-        utm_source: get(qs, "utm_source"),
-        utm_medium: get(qs, "utm_medium"),
-        utm_campaign: get(qs, "utm_campaign"),
-        utm_content: get(qs, "utm_content"),
-        utm_term: get(qs, "utm_term"),
-      };
-      // fallback for ads params
-      if (!out.utm_term) {
-        out.utm_term =
-          get(qs, "keyword") ||
-          get(qs, "gclid") ||
-          get(qs, "wbraid") ||
-          get(qs, "gbraid") ||
-          undefined;
+      sessionStorage.setItem('__crm_lite_utm__', JSON.stringify(obj));
+    } catch (_) {}
+  }
+
+  function merge(a, b) {
+    var out = {};
+    [a, b].forEach(function (src) {
+      Object.keys(src || {}).forEach(function (k) {
+        if (src[k]) out[k] = src[k];
+      });
+    });
+    return out;
+  }
+
+  function fillOnce(values) {
+    // תואם גם לאלמנטור: לפי ID, ולפי name עם סוגריים
+    UTM_KEYS.forEach(function (k) {
+      var v = values[k];
+      if (!v) return;
+
+      // לפי ה-ID הסטנדרטי של אלמנטור
+      var byId = document.getElementById('form-field-' + k);
+      if (byId && byId.tagName === 'INPUT') {
+        if (!byId.value) byId.value = v;
       }
-      return out;
-    } catch {
-      return {};
-    }
-  }
 
-  function firstTouchMerge(a, b) {
-    // שמירה על ערכי "מגע ראשון" – אם כבר מאוחסן לא נדרוס
-    return {
-      utm_source: a.utm_source || b.utm_source,
-      utm_medium: a.utm_medium || b.utm_medium,
-      utm_campaign: a.utm_campaign || b.utm_campaign,
-      utm_content: a.utm_content || b.utm_content,
-      utm_term: a.utm_term || b.utm_term,
-    };
-  }
+      // לפי name="form_fields[utm_xxx]"
+      var byName = document.querySelector('input[name="form_fields[' + k + ']"]');
+      if (byName && !byName.value) byName.value = v;
 
-  function populateInputs(utms) {
-    var fields = [
-      "utm_source",
-      "utm_medium",
-      "utm_campaign",
-      "utm_content",
-      "utm_term",
-    ];
-
-    fields.forEach(function (name) {
-      var val = utms[name];
-      if (!val) return;
-
-      // לפי id או name של שדה חבוי באלמנטור
-      var el =
-        document.getElementById(name) ||
-        document.querySelector('input[name="' + name + '"]');
-      if (el && !el.value) el.value = val;
+      // לפי name="utm_xxx" (למקרה של טפסים אחרים)
+      var plain = document.querySelector('input[name="' + k + '"]');
+      if (plain && !plain.value) plain.value = v;
     });
   }
 
-  function run() {
-    var stored = readStored() || {};
-    var fromUrl = collectFromLocation();
-    var merged = firstTouchMerge(stored, fromUrl);
-    writeStored(merged);
-    populateInputs(merged);
+  function init() {
+    var fromUrl = getParamsFromUrl();
+    var fromStore = loadFromStorage();
+    var merged = merge(fromStore, fromUrl);
+    if (Object.keys(fromUrl).length) saveToStorage(merged);
+
+    // ננסה כמה פעמים כי אלמנטור נטען דינמית
+    var tries = 0;
+    var timer = setInterval(function () {
+      fillOnce(merged);
+      tries += 1;
+      if (tries > 10) clearInterval(timer);
+    }, 300);
   }
 
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", run);
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
   } else {
-    run();
+    init();
   }
 })();
