@@ -24,6 +24,7 @@ export default async function LeadsDashboardPage() {
     auth: { persistSession: false },
   });
 
+  // שורה זו הייתה הבעיה: מ fromRow -> ל from<Row>
   const { data, error } = await supabase
     .from<Row>('leads_dashboard')
     .select('*')
@@ -75,8 +76,8 @@ export default async function LeadsDashboardPage() {
                 <Td>{r.phone ?? ''}</Td>
                 <Td>{r.utm_source ?? ''}</Td>
                 <Td>{r.utm_campaign ?? ''}</Td>
-                <Td>{r.utm_medium ?? ''}</Td>     {/* חדש */}
-                <Td>{r.ad_group ?? ''}</Td>       {/* חדש */}
+                <Td>{r.utm_medium ?? ''}</Td>
+                <Td>{r.ad_group ?? ''}</Td>
                 <Td>{r.keyword ?? ''}</Td>
                 <Td>{r.status ?? ''}</Td>
               </tr>
