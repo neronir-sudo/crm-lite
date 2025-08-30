@@ -2,19 +2,61 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 
+type AnyObj = Record<string, any>;
 type Body = Record<string, string>;
 
-/** ---------- 1) BODY PARSING ---------- **/
-async function readBody(req: Request): Promise<Body> {
-  const contentType = req.headers.get('content-type') || '';
-  // JSON
-  if (contentType.includes('application/json')) {
-    const data = (await req.json()) as Record<string, unknown>;
-    const out: Body = {};
-    for (const [key, val] of Object.entries(data)) out[key] = String(val ?? '');
-    return out;
+/* ---------- Utils: deep flatten ---------- */
+function deepFlatten(obj: any, prefix = '', out: Body = {}): Body {
+  const isObj = (v: any) => v && typeof v === 'object' && !Array.isArray(v);
+  if (isObj(obj)) {
+    for (const [k, v] of Object.entries(obj)) {
+      const p = prefix ? `${prefix}[${k}]` : k;
+      if (isObj(v) || Array.isArray(v)) deepFlatten(v, p, out);
+      else out[p] = String(v ?? '');
+    }
+  } else if (Array.isArray(obj)) {
+    obj.forEach((v, i) => {
+      const p = `${prefix}[${i}]`;
+      if (v && typeof v === 'object') deepFlatten(v, p, out);
+      else out[p] = String(v ?? '');
+    });
+  } else if (prefix) {
+    out[prefix] = String(obj ?? '');
   }
-  // x-www-form-urlencoded
+  return out;
+}
+
+/* ---------- 1) BODY PARSING ---------- */
+async function readBody(req: Request): Promise(Body) {
+  const contentType = (req.headers.get('content-type') || '').toLowerCase();
+
+  // JSON (אלמנטור שולח לפעמים JSON עם form_fields וכד')
+  if (contentType.includes('application/json')) {
+    const raw = (await req.json()) as AnyObj;
+
+    // נבנה מילון שטוח משולב:
+    // 1) flatten מלא עם סוגריים [] כדי לתפוס 'form_fields[utm_source]'
+    // 2) במקביל נוציא גם מפתחות שטוחים מתוך form_fields/fields/meta/data
+    const flat = deepFlatten(raw);
+
+    const mergeFrom = (branch?: AnyObj) => {
+      if (!branch || typeof branch !== 'object') return;
+      for (const [k, v] of Object.entries(branch)) {
+        if (v == null) continue;
+        flat[k] = String(v); // מפתח שטוח (utm_source)
+        flat[`form_fields[${k}]`] ??= String(v); // גם בסגנון form_fields[...]
+      }
+    };
+
+    mergeFrom(raw.form_fields);
+    mergeFrom(raw.fields);
+    mergeFrom(raw.meta);
+    mergeFrom(raw.data);
+
+    return flat;
+  }
+
+  // x-www-form-urlencoded (הפורמט הקלאסי של וובהוק אלמנטור)
   if (contentType.includes('application/x-www-form-urlencoded')) {
     const text = await req.text();
     const params = new URLSearchParams(text);
@@ -22,6 +64,7 @@ async function readBody(req: Request): Promise<Body> {
     params.forEach((v, k) => (out[k] = v));
     return out;
   }
+
   // multipart/form-data
   if (contentType.includes('multipart/form-data')) {
     const fd = await req.formData();
@@ -29,20 +72,18 @@ async function readBody(req: Request): Promise<Body> {
     for (const [k, v] of fd.entries()) out[k] = String(v);
     return out;
   }
-  // fallback: try json, else empty
+
+  // fallback: ננסה JSON ואז כלום
   try {
-    const data = (await req.json()) as Record<string, unknown>;
-    const out: Body = {};
-    for (const [key, val] of Object.entries(data)) out[key] = String(val ?? '');
-    return out;
+    const raw = (await req.json()) as AnyObj;
+    return deepFlatten(raw);
   } catch {
     return {};
   }
 }
 
-/** ---------- 2) FIELD NORMALIZATION (supports Elementor form_fields[...]) ---------- **/
+/* ---------- 2) ALIASES (תומך גם ב-form_fields[...]) ---------- */
 const ALIASES: Record<string, string[]> = {
-  // בסיס
   full_name: [
     'full_name', 'form_fields[full_name]',
     'שם','שם מלא','שם פרטי','Name','Your Name','אין תווית full_name',
@@ -52,16 +93,11 @@ const ALIASES: Record<string, string[]> = {
     'אימייל','דוא"ל','מייל','כתובת אימייל','אין תווית email',
   ],
   contact_phone: [
-    'contact_phone','form_fields[contact_phone]',
-    'phone','form_fields[phone]',
+    'contact_phone','form_fields[contact_phone]','phone','form_fields[phone]',
     'טלפון','מספר טלפון','טלפון נייד','אין תווית contact_phone',
   ],
-  message: [
-    'message','form_fields[message]',
-    'הודעה','תוכן','אין תווית message',
-  ],
+  message: ['message','form_fields[message]','הודעה','תוכן','אין תווית message'],
 
-  // UTM + Keyword
   utm_source:   ['utm_source','form_fields[utm_source]','source','(Source) מקור'],
   utm_medium:   ['utm_medium','form_fields[utm_medium]','medium'],
   utm_campaign: ['utm_campaign','form_fields[utm_campaign]','campaign','(Campaign) קמפיין'],
@@ -69,12 +105,10 @@ const ALIASES: Record<string, string[]> = {
   utm_term:     ['utm_term','form_fields[utm_term]','term','keyword','(Keyword) מילת מפתח','מילת מפתח'],
   keyword:      ['keyword','form_fields[keyword]','(Keyword) מילת מפתח','מילת מפתח'],
 
-  // פרטי טופס/עמוד
   form_id:   ['form_id','form_fields[form_id]','formid'],
   form_name: ['form_name','form_fields[form_name]','formname','שם טופס','אין תווית form_name'],
   page_url:  ['page_url','form_fields[page_url]','url','page-url','Page URL','כתובת עמוד'],
 
-  // מזהי אטריביושן
   gclid:  ['gclid','form_fields[gclid]'],
   wbraid: ['wbraid','form_fields[wbraid]'],
   gbraid: ['gbraid','form_fields[gbraid]'],
@@ -84,7 +118,7 @@ const ALIASES: Record<string, string[]> = {
 function pick(body: Body, canonical: string): string | undefined {
   const candidates = [
     ...(ALIASES[canonical] || [canonical]),
-    `אין תווית ${canonical}`, // Elementor "no label" quirk
+    `אין תווית ${canonical}`,
   ];
   for (const key of candidates) {
     const val = body[key];
@@ -93,7 +127,7 @@ function pick(body: Body, canonical: string): string | undefined {
   return undefined;
 }
 
-/** ---------- 2.1) UTM FALLBACK FROM URL/REFERER ---------- **/
+/* ---------- 2.1) UTM fallback מה-URL/Referer ---------- */
 function parseUTMsFromUrl(url?: string | null): Partial<Record<string, string>> {
   if (!url) return {};
   try {
@@ -104,10 +138,7 @@ function parseUTMsFromUrl(url?: string | null): Partial<Record<string, string>> 
       'utm_source','utm_campaign','utm_medium','utm_content','utm_term',
       'gclid','wbraid','gbraid','fbclid','ttclid','msclkid',
     ];
-    keys.forEach((k) => {
-      const v = q.get(k);
-      if (v) out[k] = v;
-    });
+    keys.forEach(k => { const v = q.get(k); if (v) out[k] = v; });
     const kw = q.get('keyword') ?? q.get('q');
     if (kw && !out.utm_term) out.utm_term = kw;
     return out;
@@ -116,11 +147,11 @@ function parseUTMsFromUrl(url?: string | null): Partial<Record<string, string>> 
   }
 }
 
-/** ---------- 3) HANDLERS ---------- **/
+/* ---------- 3) HANDLER ---------- */
 export async function POST(req: Request) {
   const raw = await readBody(req);
 
-  // לוג דיבוג
+  // דיבוג שימושי (תראה ב־Vercel Logs)
   try {
     console.info('[LEAD] keys:', Object.keys(raw));
     const sample: Record<string, string> = {};
@@ -137,7 +168,7 @@ export async function POST(req: Request) {
 
   const referer = req.headers.get('referer') ?? undefined;
 
-  // UTM מהגוף + Fallback מ־page_url/Referer
+  // UTM מהגוף + Fallback
   const utm_body = {
     utm_source: pick(raw, 'utm_source'),
     utm_medium: pick(raw, 'utm_medium'),
@@ -163,18 +194,18 @@ export async function POST(req: Request) {
   const lead = {
     status: 'new' as const,
     full_name: pick(raw, 'full_name'),
-    email: pick(raw, 'email'),
-    phone: pick(raw, 'contact_phone'),
-    message: pick(raw, 'message'),
+    email:     pick(raw, 'email'),
+    phone:     pick(raw, 'contact_phone'),
+    message:   pick(raw, 'message'),
 
-    utm_source: utm_body.utm_source,
-    utm_medium: utm_body.utm_medium,
+    utm_source:   utm_body.utm_source,
+    utm_medium:   utm_body.utm_medium,
     utm_campaign: utm_body.utm_campaign,
-    utm_content: utm_body.utm_content,
-    utm_term: utm_body.utm_term,
-    keyword: pick(raw, 'keyword') ?? utm_body.utm_term ?? undefined,
+    utm_content:  utm_body.utm_content,
+    utm_term:     utm_body.utm_term,
+    keyword:      pick(raw, 'keyword') ?? utm_body.utm_term ?? undefined,
 
-    form_id: pick(raw, 'form_id'),
+    form_id:   pick(raw, 'form_id'),
     form_name: pick(raw, 'form_name'),
 
     gclid:  pick(raw, 'gclid'),
@@ -204,7 +235,7 @@ export async function POST(req: Request) {
   return withCORS(NextResponse.json({ ok: true, id: data.id }, { status: 200 }));
 }
 
-/** ---------- 4) CORS ---------- **/
+/* ---------- 4) CORS ---------- */
 function withCORS(res: NextResponse) {
   res.headers.set('Access-Control-Allow-Origin', '*');
   res.headers.set('Access-Control-Allow-Methods', 'POST, OPTIONS');
