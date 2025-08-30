@@ -24,9 +24,9 @@ export default async function LeadsDashboardPage() {
     auth: { persistSession: false },
   });
 
-  // שורה זו הייתה הבעיה: מ fromRow -> ל from<Row>
+  // כאן הבעיה תוקנה: שני גנריקים: שם הטבלה + טיפוס הרשומה
   const { data, error } = await supabase
-    .from<Row>('leads_dashboard')
+    .from<'leads_dashboard', Row>('leads_dashboard')
     .select('*')
     .order('created_at', { ascending: false })
     .limit(200);
