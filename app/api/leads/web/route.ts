@@ -23,18 +23,23 @@ interface LeadInsert {
   email?: string;
   phone?: string;
   message?: string;
+
   utm_source?: string;
   utm_medium?: string;
   utm_campaign?: string;
   utm_content?: string;
   utm_term?: string;
+
   gclid?: string;
   wbraid?: string;
   gbraid?: string;
   fbclid?: string;
+
   referrer?: string;
   landing_page?: string;
+
   ip?: string | null;
+
   geo_country?: string | null;
   geo_region?: string | null;
   geo_city?: string | null;
@@ -67,11 +72,13 @@ async function readBody(req: Request): Promise<Body> {
     try {
       const j = (await req.json()) as unknown;
       const obj: Body = {};
-      Object.entries(j as Record<string, unknown> ?? {}).forEach(
+      Object.entries((j as Record<string, unknown>) ?? {}).forEach(
         ([k, v]) => (obj[k] = toStr(v))
       );
       return obj;
-    } catch {/* ignore */}
+    } catch {
+      /* ignore */
+    }
   }
 
   // x-www-form-urlencoded
@@ -97,7 +104,7 @@ async function readBody(req: Request): Promise<Body> {
   try {
     const j = (await req.json()) as unknown;
     const obj: Body = {};
-    Object.entries(j as Record<string, unknown> ?? {}).forEach(
+    Object.entries((j as Record<string, unknown>) ?? {}).forEach(
       ([k, v]) => (obj[k] = toStr(v))
     );
     return obj;
@@ -118,6 +125,7 @@ function pick(body: Body, canonical: keyof typeof ALIASES): string {
     const v = body[key] ?? body[`אין תווית ${key}`];
     if (typeof v === "string" && v.trim()) return v.trim();
   }
+  // חיפוש לפי הורדת אותיות קטנות + contains
   const lowered = Object.fromEntries(
     Object.entries(body).map(([k, v]) => [k.toLowerCase(), v])
   ) as Record<string, unknown>;
@@ -207,9 +215,10 @@ async function lookupIp(ip: string): Promise<GeoInfo | null> {
   }
 }
 
-function clean<T extends Record<string, unknown>>(obj: T): Partial<T> {
-  const out: Partial<T> = {};
-  (Object.keys(obj) as Array<keyof T>).forEach((k) => {
+/** מסיר שדות undefined / מחרוזת ריקה באופן טיפוסי */
+function cleanLead(obj: LeadInsert): Partial<LeadInsert> {
+  const out: Partial<LeadInsert> = {};
+  (Object.keys(obj) as Array<keyof LeadInsert>).forEach((k) => {
     const v = obj[k];
     const isEmptyString = typeof v === "string" && v === "";
     if (v !== undefined && !isEmptyString) {
