@@ -125,7 +125,7 @@ function pick(body: Body, canonical: keyof typeof ALIASES): string {
     const v = body[key] ?? body[`אין תווית ${key}`];
     if (typeof v === "string" && v.trim()) return v.trim();
   }
-  // חיפוש לפי הורדת אותיות קטנות + contains
+  // חיפוש רופף לפי lowercase
   const lowered = Object.fromEntries(
     Object.entries(body).map(([k, v]) => [k.toLowerCase(), v])
   ) as Record<string, unknown>;
@@ -215,14 +215,14 @@ async function lookupIp(ip: string): Promise<GeoInfo | null> {
   }
 }
 
-/** מסיר שדות undefined / מחרוזת ריקה באופן טיפוסי */
-function cleanLead(obj: LeadInsert): Partial<LeadInsert> {
-  const out: Partial<LeadInsert> = {};
+/** מסיר שדות ריקים/undefined/null ומחזיר אובייקט כללי (בלי any) */
+function cleanLead(obj: LeadInsert): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
   (Object.keys(obj) as Array<keyof LeadInsert>).forEach((k) => {
     const v = obj[k];
     const isEmptyString = typeof v === "string" && v === "";
-    if (v !== undefined && !isEmptyString) {
-      out[k] = v;
+    if (v !== undefined && v !== null && !isEmptyString) {
+      out[k as string] = v as unknown;
     }
   });
   return out;
