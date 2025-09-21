@@ -285,7 +285,7 @@ export async function POST(req: Request) {
     ...(geo ?? {}),
   };
 
-  const leadRow = clean(leadDraft);
+  const leadRow = cleanLead(leadDraft);
 
   // 7) Insert
   const { data, error } = await supabase
