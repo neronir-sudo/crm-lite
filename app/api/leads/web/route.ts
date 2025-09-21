@@ -2,11 +2,25 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 
+export const dynamic = 'force-dynamic';
+
 type Body = Record<string, string>;
 
 /** ---------- Helpers: safe string ---------- **/
 function toStr(v: unknown): string {
   return typeof v === 'string' ? v : v == null ? '' : String(v);
+}
+
+/** ---------- CORS ---------- **/
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'POST,OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type',
+  'Access-Control-Max-Age': '86400',
+};
+
+export async function OPTIONS() {
+  return new Response(null, { status: 204, headers: corsHeaders });
 }
 
 /** ---------- 1) BODY PARSING ---------- **/
@@ -15,101 +29,67 @@ async function readBody(req: Request): Promise<Body> {
 
   // JSON
   if (contentType.includes('application/json')) {
-    const data = (await req.json()) as unknown;
-    const out: Body = {};
-    if (data && typeof data === 'object') {
-      for (const [k, v] of Object.entries(data as Record<string, unknown>)) {
-        out[k] = toStr(v);
-      }
-    }
-    return out;
+    try {
+      const json = await req.json();
+      const obj: Body = {};
+      Object.entries(json || {}).forEach(([k, v]) => (obj[k] = toStr(v)));
+      return obj;
+    } catch {}
   }
 
   // x-www-form-urlencoded
   if (contentType.includes('application/x-www-form-urlencoded')) {
     const text = await req.text();
-    const params = new URLSearchParams(text);
-    const out: Body = {};
-    params.forEach((v, k) => (out[k] = v));
-    return out;
+    const p = new URLSearchParams(text);
+    const obj: Body = {};
+    p.forEach((v, k) => (obj[k] = v));
+    return obj;
   }
 
   // multipart/form-data
   if (contentType.includes('multipart/form-data')) {
     const fd = await req.formData();
-    const out: Body = {};
-    for (const [k, v] of fd.entries()) out[k] = toStr(v);
-    return out;
+    const obj: Body = {};
+    for (const [k, v] of fd.entries()) {
+      obj[k] = typeof v === 'string' ? v : v.name;
+    }
+    return obj;
   }
 
-  // fallback: try JSON, else empty
+  // Fallback ל-JSON
   try {
-    const data = (await req.json()) as Record<string, unknown>;
-    const out: Body = {};
-    for (const [k, v] of Object.entries(data)) out[k] = toStr(v);
-    return out;
+    const json = await req.json();
+    const obj: Body = {};
+    Object.entries(json || {}).forEach(([k, v]) => (obj[k] = toStr(v)));
+    return obj;
   } catch {
     return {};
   }
 }
 
-/** ---------- 2) FLATTEN Elementor shapes ---------- **/
-// תומך ב: form_fields[utm_source]=..., fields (מערך/אובייקט), וגם form_fields כ-JSON
-function flattenElementor(raw: Body): Body {
-  const out: Body = { ...raw };
+/** ---------- 2) PICK / ALIASES ---------- **/
+const ALIASES: Record<string, string[]> = {
+  full_name: ['full_name', 'name', 'שם', 'your-name'],
+  email: ['email', 'אימייל', 'your-email'],
+  phone: ['phone', 'טלפון', 'נייד', 'your-phone'],
+  message: ['message', 'הודעה', 'messages'],
+};
 
-  // 2.1 מפענח מפתחות בסגנון form_fields[utm_source] -> utm_source
-  for (const [k, v] of Object.entries(raw)) {
-    const m = k.match(/^form_fields\[(.+?)\]$/i);
-    if (m && m[1]) {
-      out[m[1]] = v;
+function pick(body: Body, canonical: keyof typeof ALIASES): string {
+  for (const key of ALIASES[canonical]) {
+    const v = body[key] ?? body[`אין תווית ${key}`];
+    if (typeof v === 'string' && v.trim()) return v.trim();
+  }
+  // חיפוש לפי הכללה בשם שדה (עברית/וריאציות)
+  const lowered = Object.fromEntries(
+    Object.entries(body).map(([k, v]) => [k.toLowerCase(), v])
+  );
+  for (const needle of ALIASES[canonical].map((k) => k.toLowerCase())) {
+    for (const [k, v] of Object.entries(lowered)) {
+      if (k.includes(needle) && typeof v === 'string' && v.trim()) return v.trim();
     }
   }
-
-  // 2.2 אם יש שדה form_fields שהוא JSON – נפרוס אותו
-  const maybeFormFields = raw['form_fields'];
-  if (maybeFormFields) {
-    try {
-      const parsed = JSON.parse(maybeFormFields) as unknown;
-      if (parsed && typeof parsed === 'object') {
-        // יכול להיות אובייקט { utm_source: '...' } או מערך [{id:'utm_source', value:'...'}]
-        if (Array.isArray(parsed)) {
-          for (const item of parsed) {
-            const id = (item as Record<string, unknown>)['id'];
-            const val = (item as Record<string, unknown>)['value'];
-            if (typeof id === 'string') out[id] = toStr(val);
-          }
-        } else {
-          for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
-            out[k] = toStr(v);
-          }
-        }
-      }
-    } catch {/* ignore */}
-  }
-
-  // 2.3 אם יש שדה fields (חלק מתוספים של אלמנטור) – נפרוס אותו
-  const maybeFields = raw['fields'];
-  if (maybeFields) {
-    try {
-      const parsed = JSON.parse(maybeFields) as unknown;
-      if (parsed && typeof parsed === 'object') {
-        if (Array.isArray(parsed)) {
-          for (const item of parsed) {
-            const id = (item as Record<string, unknown>)['id'];
-            const val = (item as Record<string, unknown>)['value'];
-            if (typeof id === 'string') out[id] = toStr(val);
-          }
-        } else {
-          for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
-            out[k] = toStr(v);
-          }
-        }
-      }
-    } catch {/* ignore */}
-  }
-
-  return out;
+  return '';
 }
 
 /** ---------- 3) UTM from Referer (fallback) ---------- **/
@@ -132,57 +112,99 @@ function extractUtmFromUrl(url: string): Partial<Body> {
   }
 }
 
-/** ---------- 4) ALIASES + picker ---------- **/
-const ALIASES: Record<string, string[]> = {
-  full_name: ['full_name', 'שם', 'שם מלא', 'שם פרטי', 'Name', 'Your Name', 'אין תווית full_name'],
-  email: ['email', 'אימייל', 'דוא"ל', 'מייל', 'כתובת אימייל', 'אין תווית email'],
-  contact_phone: ['contact_phone', 'phone', 'טלפון', 'מספר טלפון', 'טלפון נייד', 'אין תווית contact_phone'],
-  message: ['message', 'הודעה', 'תוכן', 'אין תווית message'],
-
-  utm_source: ['utm_source', 'source', '(Source) מקור', 'form_fields[utm_source]'],
-  utm_medium: ['utm_medium', 'medium', 'form_fields[utm_medium]'],
-  utm_campaign: ['utm_campaign', 'campaign', '(Campaign) קמפיין', 'form_fields[utm_campaign]'],
-  utm_content: ['utm_content', 'content', 'form_fields[utm_content]'],
-  utm_term: ['utm_term', 'term', 'keyword', '(Keyword) מילת מפתח', 'מילת מפתח', 'form_fields[utm_term]'],
-  keyword: ['keyword', '(Keyword) מילת מפתח', 'מילת מפתח', 'form_fields[keyword]'],
-
-  form_id: ['form_id', 'formid'],
-  form_name: ['form_name', 'formname', 'שם טופס', 'אין תווית form_name'],
-};
-
-function pick(body: Body, canonical: string): string | undefined {
-  const candidates = [
-    ...(ALIASES[canonical] || [canonical]),
-    `אין תווית ${canonical}`,
-  ];
-
-  // בנוסף: חיפוש כללי – אם יש מפתח שמכיל את שם השדה (כיסוי למקרי קצה)
-  for (const key of Object.keys(body)) {
-    if (key === canonical || candidates.includes(key)) {
-      const val = body[key];
-      if (val && val.trim() !== '') return val.trim();
-    }
-  }
-  for (const key of Object.keys(body)) {
-    if (key.includes(canonical)) {
-      const val = body[key];
-      if (val && val.trim() !== '') return val.trim();
-    }
-  }
-  return undefined;
+/** ---------- 4) IP + Geo ---------- **/
+function firstPublicIp(xff: string): string {
+  const cand = (xff || '').split(',')[0]?.trim() || '';
+  return cand;
 }
 
-/** ---------- 5) HANDLERS ---------- **/
-export async function POST(req: Request) {
-  const raw = await readBody(req);
-  const body = flattenElementor(raw);
-
-  // לוג שימושי לבדיקה
+async function lookupIp(ip: string) {
   try {
-    console.info('[LEAD] keys:', Object.keys(body));
+    if (
+      !ip ||
+      ip === '127.0.0.1' ||
+      ip === '::1' ||
+      ip.startsWith('10.') ||
+      ip.startsWith('192.168.') ||
+      ip.startsWith('172.16.')
+    ) {
+      return null;
+    }
+    const url =
+      `http://ip-api.com/json/${encodeURIComponent(ip)}` +
+      `?fields=status,message,country,regionName,city,lat,lon&lang=he`;
+
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 3500);
+    const res = await fetch(url, { signal: ctrl.signal });
+    clearTimeout(t);
+
+    if (!res.ok) return null;
+    const j = await res.json();
+    if (j.status !== 'success') return null;
+
+    return {
+      geo_country: j.country || null,
+      geo_region: j.regionName || null,
+      geo_city: j.city || null,
+      geo_lat: typeof j.lat === 'number' ? j.lat : null,
+      geo_lon: typeof j.lon === 'number' ? j.lon : null,
+      geo_text: (j.city ? `${j.city}, ` : '') + (j.country || '') || null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** ---------- 5) Supabase ---------- **/
+const supabase = createClient(
+  process.env.SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+);
+
+/** ---------- 6) POST ---------- **/
+export async function POST(req: Request) {
+  // 1) Body
+  const body = await readBody(req);
+
+  // 2) IP
+  const ipFromBody = body.ip || '';
+  const xff = req.headers.get('x-forwarded-for') || '';
+  const ip = ipFromBody || firstPublicIp(xff) || (undefined as any as string) || '';
+
+  // 3) Geo
+  const geo = await lookupIp(ip);
+
+  // 4) UTM + Referrer + Landing Page
+  const directRef = toStr(body.referrer) || toStr(req.headers.get('referer'));
+  const landing_page = toStr(body.landing_page) || '';
+  const utmRaw: Partial<Body> = {
+    utm_source: body.utm_source || '',
+    utm_medium: body.utm_medium || '',
+    utm_campaign: body.utm_campaign || '',
+    utm_content: body.utm_content || '',
+    utm_term: body.utm_term || body.keyword || '',
+    gclid: body.gclid || '',
+    wbraid: body.wbraid || '',
+    gbraid: body.gbraid || '',
+    fbclid: body.fbclid || '',
+  };
+  // אם אין UTM בגוף – ננסה לחלץ מה-Referer
+  if (!utmRaw.utm_source && directRef) {
+    Object.assign(utmRaw, extractUtmFromUrl(directRef));
+  }
+
+  // 5) שדות עיקריים
+  const full_name = pick(body, 'full_name');
+  const email = pick(body, 'email');
+  const phone = pick(body, 'phone');
+  const message = pick(body, 'message');
+
+  // 6) דוגמית לוג (עוזר בבדיקות)
+  try {
     const sample: Record<string, string> = {};
     for (const k of [
-      'full_name','email','contact_phone','message',
+      'full_name', 'email', 'phone', 'message',
       'utm_source','utm_campaign','utm_medium','utm_content','utm_term','keyword',
       'form_id','form_name'
     ]) {
@@ -192,84 +214,43 @@ export async function POST(req: Request) {
     console.info('[LEAD] sample values:', sample);
   } catch {}
 
-  // בניית הרשומה
-  const leadDraft: Record<string, string> = {
+  // 7) בניית הרשומה
+  const leadDraft: Record<string, any> = {
     status: 'new',
+    full_name,
+    email,
+    phone,
+    message,
+    ...utmRaw,
+    referrer: directRef || '',
+    landing_page: landing_page,
+    ip: ip || null,
+    ...(geo || {}), // geo_text, geo_city, geo_region, geo_country, geo_lat, geo_lon
   };
 
-  const full_name = pick(body, 'full_name');
-  if (full_name) leadDraft.full_name = full_name;
+  // ניקוי ערכים ריקים
+  Object.keys(leadDraft).forEach((k) => {
+    const v = leadDraft[k];
+    if (v === '' || v === undefined) delete leadDraft[k];
+  });
 
-  const email = pick(body, 'email');
-  if (email) leadDraft.email = email;
-
-  const phone = pick(body, 'contact_phone');
-  if (phone) leadDraft.phone = phone;
-
-  const message = pick(body, 'message');
-  if (message) leadDraft.message = message;
-
-  // UTM (ננסה קודם מה-body; אם חסר – מה-Referer)
-  const utmKeys = ['utm_source','utm_medium','utm_campaign','utm_content','utm_term','keyword'] as const;
-  for (const k of utmKeys) {
-    const val = pick(body, k);
-    if (val) leadDraft[k] = val;
-  }
-
-  // אם חסר משהו – להשלים מהרפרר
-  const ref = req.headers.get('referer') || req.headers.get('x-forwarded-referer') || '';
-  if (ref) {
-    const fromRef = extractUtmFromUrl(ref);
-    for (const [k, v] of Object.entries(fromRef)) {
-      if (v && !leadDraft[k]) leadDraft[k] = v;
-    }
-  }
-
-  // מזהה/שם טופס (אם יש)
-  const form_id = pick(body, 'form_id');
-  if (form_id) leadDraft.form_id = form_id;
-
-  const form_name = pick(body, 'form_name');
-  if (form_name) leadDraft.form_name = form_name;
-
-  // סינון undefined/ריקים
-  const toInsert: Record<string, string> = {};
-  for (const [k, v] of Object.entries(leadDraft)) {
-    if (v != null && v !== '') toInsert[k] = v;
-  }
-
-  // Supabase
-  const supabaseUrl = process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-  if (!supabaseUrl || !serviceKey) {
-    console.error('Missing Supabase env vars');
-    return NextResponse.json({ ok: false, error: 'Server not configured' }, { status: 500 });
-  }
-
-  const supabase = createClient(supabaseUrl, serviceKey, { auth: { persistSession: false } });
-
+  // 8) Insert
   const { data, error } = await supabase
     .from('leads')
-    .insert(toInsert)
+    .insert(leadDraft)
     .select('id')
     .single();
 
   if (error) {
-    console.error('Supabase insert error:', error);
-    return NextResponse.json({ ok: false, supabase_error: error }, { status: 500 });
+    console.error('Insert error:', error);
+    return NextResponse.json(
+      { ok: false, error: error.message },
+      { status: 500, headers: corsHeaders }
+    );
   }
 
-  return NextResponse.json({ ok: true, id: data.id }, { status: 200 });
-}
-
-export async function OPTIONS() {
-  return new Response(null, {
-    headers: {
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'POST, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type',
-      'Access-Control-Max-Age': '86400',
-    },
-  });
+  return NextResponse.json(
+    { ok: true, id: data.id, ip: ip || null, geo: geo || null },
+    { status: 200, headers: corsHeaders }
+  );
 }
